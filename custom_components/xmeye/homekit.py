@@ -184,6 +184,10 @@ class HomeKitManager:
         self.cameras[key]["stream"] = stream
         await self.apply()
 
+    async def set_preload(self, key: str, preload: bool) -> None:
+        self.cameras[key]["preload"] = preload
+        await self.apply()
+
     async def reset_pairing(self, key: str) -> None:
         """Forget the Apple Home pairing and use a new code."""
         self.cameras[key]["pin"] = _new_pin()
@@ -236,6 +240,7 @@ class HomeKitManager:
                     "pin": format_pin(cam["pin"]),
                     "paired": bool(paired.get(key)),
                     "stream": cam.get("stream", "main"),
+                    "preload": bool(cam.get("preload")),
                 }
                 for key, cam in self.cameras.items()
                 if cam.get("source")
@@ -285,6 +290,13 @@ class HomeKitManager:
             "srtp": {"listen": f":{SRTP_PORT}"},
             "log": {"level": "info"},
             "streams": {key: _sources(key, cam) for key, cam in enabled.items()},
+            # "Fast start": keep the stream (and an H.265 camera's transcoding) running,
+            # so Apple Home only waits for the next key frame instead of starting it all
+            "preload": {
+                key: "video=h264&audio=opus"
+                for key, cam in enabled.items()
+                if cam.get("preload")
+            },
             "homekit": homekit,
         }
         text = "# Managed by the XMeye Full NVR integration\n" + _dump(config)

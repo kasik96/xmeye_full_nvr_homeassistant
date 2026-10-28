@@ -282,6 +282,7 @@ async def ws_probe(
     first = last = None
     header_fps = 0
     codec = None
+    iframes: list[int] = []
     async with data.client.download(part, action=msg["action"], then=msg.get("control")) as chunks:
         async for chunk in chunks:
             received += len(chunk)
@@ -290,6 +291,7 @@ async def ws_probe(
                     s = stamp_seconds(f.stamp)
                     header_fps = f.fps
                     codec = f.codec
+                    iframes.append(frames)
                     if first is None:
                         first = (frames, s)
                     last = (frames, s)
@@ -308,6 +310,8 @@ async def ws_probe(
             "frames": frames,
             "header_fps": header_fps,
             "codec": {2: "h264", 3: "h265"}.get(codec, codec),
+            # frames between key frames
+            "gop": [b - a for a, b in zip(iframes, iframes[1:])][:12],
             "stamp_span": span,
             "measured_fps": round((last[0] - first[0]) / span, 2) if span else None,
             "speed_vs_wall": round(span / wall, 2) if wall else None,
@@ -383,6 +387,7 @@ async def ws_homekit(
         vol.Optional("enabled"): bool,
         vol.Optional("reset"): bool,
         vol.Optional("stream"): vol.In(["main", "sub"]),
+        vol.Optional("preload"): bool,
     }
 )
 @websocket_api.async_response
@@ -396,6 +401,8 @@ async def ws_homekit_set(
         await manager.reset_pairing(msg["key"])
     if "stream" in msg:
         await manager.set_stream(msg["key"], msg["stream"])
+    if "preload" in msg:
+        await manager.set_preload(msg["key"], msg["preload"])
     if "enabled" in msg:
         await manager.set_enabled(msg["key"], msg["enabled"])
     connection.send_result(msg["id"], await manager.status())

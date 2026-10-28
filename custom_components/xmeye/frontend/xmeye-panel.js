@@ -122,6 +122,7 @@ table { width:100%; border-collapse:collapse; font-size:13px; }
 th { text-align:left; color:#8a93a3; font-weight:400; padding:6px 8px; white-space:nowrap; }
 td { padding:8px; border-top:1px solid #22252a; vertical-align:middle; }
 select.hkstream { padding:2px 4px; font-size:12px; }
+.fast { white-space:nowrap; cursor:pointer; } .fast input { vertical-align:middle; margin:0 2px 0 0; }
 td select { background:#1f2226; color:#e8e8ea; border:0; border-radius:6px; padding:5px 6px; font:inherit; }
 .pin { font-family:ui-monospace,monospace; font-size:14px; letter-spacing:1px; }
 .ok { color:#4ade80; } .muted { color:#888; } .err { color:#f87171; }
@@ -710,7 +711,9 @@ class XMeyePanel extends HTMLElement {
                 ${h.enabled ? `<div class="small">${h.paired ? `<span class="ok">Paired</span> · <button class="btn" data-hkreset="${h.key}">Unpair</button>` : `Code <span class="pin">${h.pin}</span>`}
                   · <select class="hkstream" data-hkstream="${h.key}" title="Main: full resolution (H.265 cameras are converted to 1080p H.264). Sub: no conversion, lower resolution.">
                     <option value="main" ${h.stream !== "sub" ? "selected" : ""}>Main stream</option>
-                    <option value="sub" ${h.stream === "sub" ? "selected" : ""}>Sub stream</option></select></div>` : ""}` : `<span class="muted">—</span>`}</td>
+                    <option value="sub" ${h.stream === "sub" ? "selected" : ""}>Sub stream</option></select>
+                  · <label class="fast" title="Keep the stream running so it opens in Apple Home in a second or two. Uses CPU all the time for H.265 cameras (transcoding).">
+                    <input type="checkbox" data-hkpreload="${h.key}" ${h.preload ? "checked" : ""}> Fast start</label></div>` : ""}` : `<span class="muted">—</span>`}</td>
             </tr>`;
           })
           .join("")}
@@ -760,6 +763,9 @@ class XMeyePanel extends HTMLElement {
     };
     root.querySelectorAll("[data-hk]").forEach((el) =>
       el.addEventListener("click", () => hkSet({ key: el.dataset.hk, enabled: !el.classList.contains("on") }))
+    );
+    root.querySelectorAll("[data-hkpreload]").forEach((el) =>
+      el.addEventListener("change", () => hkSet({ key: el.dataset.hkpreload, preload: el.checked }))
     );
     root.querySelectorAll("[data-hkstream]").forEach((el) =>
       el.addEventListener("change", () => hkSet({ key: el.dataset.hkstream, stream: el.value }))

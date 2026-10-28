@@ -68,6 +68,18 @@ go2rtc converts the video to 1080p H.264 with ffmpeg while someone watches in th
 **sub stream**, which is often H.264, so nothing is converted, at a lower resolution.
 Sound is converted to Opus.
 
+**Start time in the Home app.** Without preparation the stream starts when you open it: go2rtc
+connects, and for H.265 cameras ffmpeg waits for the camera's next key frame before it can
+convert anything. Cameras with a "smart" H.265+ codec send key frames irregularly (up to
+6 s apart), so opening one can take 10–20 s. Two things help:
+
+* **Fast start** (per camera in Settings) keeps the stream running, so Apple Home only waits
+  for the next key frame (every 2 s after conversion). For an H.265 camera this means
+  converting all the time: about 30 % CPU on the test box (x86) for one 2560×1440 camera.
+  For H.264 cameras it only keeps the connection to the NVR open.
+* In the camera's own settings, a short key-frame interval (1–2 s) and no smart codec
+  (H.265+ / "smart encoding") make every viewer start faster, including the panel.
+
 1. Panel → **Settings** → turn **HomeKit** on for a camera.
 2. Apple Home → **Add Accessory → More options**, pick the camera and enter the code
    shown in the panel.

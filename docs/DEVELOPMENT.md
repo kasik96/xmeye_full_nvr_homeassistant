@@ -78,7 +78,9 @@ demand (`exec` allowed for `ffmpeg` only, ffmpeg reads the stream back over go2r
 `127.0.0.1:51832`). go2rtc encodes H.264 level 4.1 (max 1920×1080). A 2560×1440 picture at that level only showed
 its key frames on the iPhone (one frame every ~4 s with the default `-g 50` at 12 fps), hence the 1080p scale and
 2 s GOP. Measured on the test box: 1080p transcode of a 12 fps H.265 stream runs at 1.15× real time. VAAPI is not
-available inside the HA core container. The per-camera `stream: sub` option uses the sub stream (often H.264) instead. go2rtc patches pairings into its YAML in place and breaks on PyYAML's default style
+available inside the HA core container. The per-camera `stream: sub` option uses the sub stream (often H.264) instead. `preload: {<name>: "video=h264&audio=opus"}` (go2rtc
+config) keeps a camera's HomeKit stream and transcoding running ("Fast start"); measured +~28 % core CPU for one
+2560×1440 H.265 camera. The test camera's H.265 GOP was irregular (27 and 71 frames at 12 fps). go2rtc patches pairings into its YAML in place and breaks on PyYAML's default style
 (lists at the key's indent, long lines wrapped), so the file is written with indented lists and no wrapping, and
 only rewritten (and go2rtc restarted) when it changes. Without a system go2rtc, the pinned 1.9.14 release is
 downloaded and checked against SHA-256 (amd64, arm64, arm).
