@@ -264,12 +264,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: XMeyeConfigEntry) -> boo
 
     homekit: HomeKitManager = hass.data[DOMAIN]["homekit"]
     for ch, name in channels.items():
-        source = (
-            data.go2rtc.rtsp_url(data.stream_name(ch, False))
+        sources = [
+            data.go2rtc.rtsp_url(data.stream_name(ch, sub))
             if data.go2rtc
-            else data.rtsp_url(ch, False)
-        )
-        await homekit.register(entry.entry_id, data.serial, ch, name, source)
+            else data.rtsp_url(ch, sub)
+            for sub in (False, True)
+        ]
+        await homekit.register(entry.entry_id, data.serial, ch, name, *sources)
     await homekit.apply()
 
     data.alarms = AlarmListener(hass, client, entry.entry_id)

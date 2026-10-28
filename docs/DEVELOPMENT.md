@@ -72,9 +72,13 @@ SRTP is on `:51831` (HA's go2rtc has 8443). Streams are `hk_<serial>_<ch>` point
 the pairings back into that file; the integration keeps them when it rewrites it. Per-camera on/off and PIN live in
 `.storage/xmeye.homekit`. go2rtc's mDNS only answers queries (no announcements).
 
-Each HomeKit stream has `[rtsp restream, ffmpeg:<name>#video=h264, ffmpeg:<name>#audio=opus]`: go2rtc takes the
-first source whose codecs HomeKit accepts, so H.264 is passed through and H.265 is transcoded on demand (`exec`
-allowed for `ffmpeg` only). go2rtc patches pairings into its YAML in place and breaks on PyYAML's default style
+Each HomeKit stream has `[rtsp restream, ffmpeg:<name>#video=h264#width=1920#raw=-g 24, ffmpeg:<name>#audio=opus]`:
+go2rtc takes the first source whose codecs HomeKit accepts, so H.264 is passed through and H.265 is transcoded on
+demand (`exec` allowed for `ffmpeg` only, ffmpeg reads the stream back over go2rtc's RTSP server on
+`127.0.0.1:51832`). go2rtc encodes H.264 level 4.1 (max 1920×1080). A 2560×1440 picture at that level only showed
+its key frames on the iPhone (one frame every ~4 s with the default `-g 50` at 12 fps), hence the 1080p scale and
+2 s GOP. Measured on the test box: 1080p transcode of a 12 fps H.265 stream runs at 1.15× real time. VAAPI is not
+available inside the HA core container. The per-camera `stream: sub` option uses the sub stream (often H.264) instead. go2rtc patches pairings into its YAML in place and breaks on PyYAML's default style
 (lists at the key's indent, long lines wrapped), so the file is written with indented lists and no wrapping, and
 only rewritten (and go2rtc restarted) when it changes. Without a system go2rtc, the pinned 1.9.14 release is
 downloaded and checked against SHA-256 (amd64, arm64, arm).

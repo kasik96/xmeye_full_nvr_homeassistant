@@ -121,6 +121,7 @@ aside { width:340px; flex:none; border-left:1px solid #1f2125; display:flex; fle
 table { width:100%; border-collapse:collapse; font-size:13px; }
 th { text-align:left; color:#8a93a3; font-weight:400; padding:6px 8px; white-space:nowrap; }
 td { padding:8px; border-top:1px solid #22252a; vertical-align:middle; }
+select.hkstream { padding:2px 4px; font-size:12px; }
 td select { background:#1f2226; color:#e8e8ea; border:0; border-radius:6px; padding:5px 6px; font:inherit; }
 .pin { font-family:ui-monospace,monospace; font-size:14px; letter-spacing:1px; }
 .ok { color:#4ade80; } .muted { color:#888; } .err { color:#f87171; }
@@ -706,7 +707,10 @@ class XMeyePanel extends HTMLElement {
               <td data-label="Motion detection"><span class="switch ${motion.Enable ? "on" : ""}" data-set="motion_enabled" role="switch"></span></td>
               <td data-label="Sensitivity"><select data-set="motion_level">${[1, 2, 3, 4, 5, 6].map((l) => `<option ${l === motion.Level ? "selected" : ""}>${l}</option>`).join("")}</select></td>
               <td class="hk" data-label="HomeKit">${h ? `<span class="switch ${h.enabled ? "on" : ""}" data-hk="${h.key}" role="switch"></span>
-                ${h.enabled ? `<div class="small">${h.paired ? `<span class="ok">Paired</span> · <button class="btn" data-hkreset="${h.key}">Unpair</button>` : `Code <span class="pin">${h.pin}</span>`}</div>` : ""}` : `<span class="muted">—</span>`}</td>
+                ${h.enabled ? `<div class="small">${h.paired ? `<span class="ok">Paired</span> · <button class="btn" data-hkreset="${h.key}">Unpair</button>` : `Code <span class="pin">${h.pin}</span>`}
+                  · <select class="hkstream" data-hkstream="${h.key}" title="Main: full resolution (H.265 cameras are converted to 1080p H.264). Sub: no conversion, lower resolution.">
+                    <option value="main" ${h.stream !== "sub" ? "selected" : ""}>Main stream</option>
+                    <option value="sub" ${h.stream === "sub" ? "selected" : ""}>Sub stream</option></select></div>` : ""}` : `<span class="muted">—</span>`}</td>
             </tr>`;
           })
           .join("")}
@@ -756,6 +760,9 @@ class XMeyePanel extends HTMLElement {
     };
     root.querySelectorAll("[data-hk]").forEach((el) =>
       el.addEventListener("click", () => hkSet({ key: el.dataset.hk, enabled: !el.classList.contains("on") }))
+    );
+    root.querySelectorAll("[data-hkstream]").forEach((el) =>
+      el.addEventListener("change", () => hkSet({ key: el.dataset.hkstream, stream: el.value }))
     );
     root.querySelectorAll("[data-hkreset]").forEach((el) =>
       el.addEventListener("click", () => hkSet({ key: el.dataset.hkreset, reset: true }))

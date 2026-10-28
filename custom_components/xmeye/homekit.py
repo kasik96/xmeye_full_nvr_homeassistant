@@ -50,6 +50,24 @@ ARCHES = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm
 BAD_PINS = {f"{d}" * 8 for d in range(10)} | {"12345678", "87654321"}
 
 
+def _sources(key: str, cam: dict[str, Any]) -> list[str]:
+    """go2rtc takes the first source whose codecs HomeKit accepts.
+
+    H.264 is passed through. H.265 (HomeKit takes H.264 only) is transcoded to
+    1080p: go2rtc encodes H.264 level 4.1, which allows at most 1920x1080 —
+    a 1440p picture at that level only showed its key frames on the iPhone.
+    A key frame every 2 s keeps the picture recovering quickly. The sub stream
+    option skips transcoding at a lower resolution.
+    """
+    if cam.get("stream") == "sub" and cam.get("sub_source"):
+        return [cam["sub_source"], f"ffmpeg:{key}#video=h264", f"ffmpeg:{key}#audio=opus"]
+    return [
+        cam["source"],
+        f"ffmpeg:{key}#video=h264#width=1920#raw=-g 24",
+        f"ffmpeg:{key}#audio=opus",
+    ]
+
+
 class _Dumper(yaml.SafeDumper):
     """YAML the way go2rtc writes it: indented lists, no line wrapping.
 
@@ -111,12 +129,25 @@ class HomeKitManager:
         return f"hk_{serial}_{channel + 1}"
 
     async def register(
-        self, entry_id: str, serial: str, channel: int, name: str, source: str | None
+        self,
+        entry_id: str,
+        serial: str,
+        channel: int,
+        name: str,
+        source: str | None,
+        sub_source: str | None = None,
     ) -> None:
         """Called by each NVR at setup with its cameras' restream URLs."""
         key = self.stream_name(serial, channel)
         cam = self.cameras.setdefault(key, {"enabled": False, "pin": _new_pin()})
-        cam.update(entry_id=entry_id, channel=channel + 1, name=name, source=source)
+        cam.setdefault("stream", "main")
+        cam.update(
+            entry_id=entry_id,
+            channel=channel + 1,
+            name=name,
+            source=source,
+            sub_source=sub_source,
+        )
 
     async def apply(self) -> None:
         """Write the config and (re)start go2rtc for the enabled cameras.
@@ -147,6 +178,10 @@ class HomeKitManager:
 
     async def set_enabled(self, key: str, enabled: bool) -> None:
         self.cameras[key]["enabled"] = enabled
+        await self.apply()
+
+    async def set_stream(self, key: str, stream: str) -> None:
+        self.cameras[key]["stream"] = stream
         await self.apply()
 
     async def reset_pairing(self, key: str) -> None:
@@ -200,6 +235,7 @@ class HomeKitManager:
                     "enabled": cam["enabled"],
                     "pin": format_pin(cam["pin"]),
                     "paired": bool(paired.get(key)),
+                    "stream": cam.get("stream", "main"),
                 }
                 for key, cam in self.cameras.items()
                 if cam.get("source")
@@ -248,14 +284,7 @@ class HomeKitManager:
             # HA's own go2rtc has SRTP on the default 8443
             "srtp": {"listen": f":{SRTP_PORT}"},
             "log": {"level": "info"},
-            "streams": {
-                key: [
-                    cam["source"],
-                    f"ffmpeg:{key}#video=h264",
-                    f"ffmpeg:{key}#audio=opus",
-                ]
-                for key, cam in enabled.items()
-            },
+            "streams": {key: _sources(key, cam) for key, cam in enabled.items()},
             "homekit": homekit,
         }
         text = "# Managed by the XMeye Full NVR integration\n" + _dump(config)

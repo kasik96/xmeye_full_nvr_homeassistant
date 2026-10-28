@@ -63,8 +63,10 @@ go2rtc 1.9.14 release from GitHub once (checked by SHA-256) into `.storage`. It 
 pairing endpoints are reachable from the network; go2rtc's API and streams are not. It
 reads the main streams from HA's go2rtc RTSP restream, so H.264 video is passed through and
 the NVR still sees one connection per stream. HomeKit only takes H.264. For H.265 cameras
-go2rtc converts the video with ffmpeg while someone watches in the Home app. Sound is
-converted to Opus.
+go2rtc converts the video to 1080p H.264 with ffmpeg while someone watches in the Home app
+(about real time for a 2560×1440 camera on an x86 box). Each camera can also use its
+**sub stream**, which is often H.264, so nothing is converted, at a lower resolution.
+Sound is converted to Opus.
 
 1. Panel → **Settings** → turn **HomeKit** on for a camera.
 2. Apple Home → **Add Accessory → More options**, pick the camera and enter the code

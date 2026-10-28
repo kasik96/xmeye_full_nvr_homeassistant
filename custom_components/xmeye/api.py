@@ -382,6 +382,7 @@ async def ws_homekit(
         vol.Required("key"): str,
         vol.Optional("enabled"): bool,
         vol.Optional("reset"): bool,
+        vol.Optional("stream"): vol.In(["main", "sub"]),
     }
 )
 @websocket_api.async_response
@@ -393,6 +394,9 @@ async def ws_homekit_set(
         raise APIError("unknown camera")
     if msg.get("reset"):
         await manager.reset_pairing(msg["key"])
+    if "stream" in msg:
+        await manager.set_stream(msg["key"], msg["stream"])
     if "enabled" in msg:
         await manager.set_enabled(msg["key"], msg["enabled"])
     connection.send_result(msg["id"], await manager.status())
+
