@@ -31,6 +31,7 @@ _LOGGER = logging.getLogger(__name__)
 
 HOMEKIT_PORT = 51830
 SRTP_PORT = 51831
+RTSP_PORT = 51832
 RESPAWN = 10
 # HAP endpoints; everything else of go2rtc's API stays closed on the LAN
 HAP_PATHS = ["/pair-setup", "/pair-verify", "/pairings", "/accessories", "/characteristics"]
@@ -183,8 +184,8 @@ class HomeKitManager:
         await self.hass.async_add_executor_job(_save)
         return str(target)
 
-    def status(self) -> dict[str, Any]:
-        paired = self._read_pairings()
+    async def status(self) -> dict[str, Any]:
+        paired = await self.hass.async_add_executor_job(self._read_pairings)
         return {
             "available": bool(self._binary) or platform.system() == "Linux",
             "running": self._proc is not None and self._proc.returncode is None,
@@ -241,7 +242,9 @@ class HomeKitManager:
             # only) and audio (Opus); H.264 video is passed through untouched
             "exec": {"allow_paths": [self._ffmpeg]},
             "ffmpeg": {"bin": self._ffmpeg},
-            "rtsp": {"listen": ""},
+            # ffmpeg sources (H.265 → H.264, audio → Opus) read the stream back over
+            # go2rtc's own RTSP server; localhost only
+            "rtsp": {"listen": f"127.0.0.1:{RTSP_PORT}"},
             # HA's own go2rtc has SRTP on the default 8443
             "srtp": {"listen": f":{SRTP_PORT}"},
             "log": {"level": "info"},

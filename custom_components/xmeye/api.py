@@ -368,11 +368,11 @@ async def ws_settings_set(
 
 @websocket_api.require_admin
 @websocket_api.websocket_command({vol.Required("type"): "xmeye/homekit"})
-@callback
-def ws_homekit(
+@websocket_api.async_response
+async def ws_homekit(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
 ) -> None:
-    connection.send_result(msg["id"], hass.data[DOMAIN]["homekit"].status())
+    connection.send_result(msg["id"], await hass.data[DOMAIN]["homekit"].status())
 
 
 @websocket_api.require_admin
@@ -395,4 +395,4 @@ async def ws_homekit_set(
         await manager.reset_pairing(msg["key"])
     if "enabled" in msg:
         await manager.set_enabled(msg["key"], msg["enabled"])
-    connection.send_result(msg["id"], manager.status())
+    connection.send_result(msg["id"], await manager.status())

@@ -22,8 +22,9 @@ firmware V4.03.R11, with H.264 and H.265 cameras, on Home Assistant OS 2026.10.
 ## The panel (sidebar → XMeye Full NVR)
 
 **Grid:** the newest motion events of all cameras along the top (thumbnail and time),
-and a live tile for every camera below (sub stream, muted), sized so all cameras fit on the
-screen. Click a tile or an event to open that camera.
+and a live tile for every camera below (sub stream, muted). Choose the layout next to
+*Cameras*: **All** (every camera fits on the screen, also on a phone), **1** or **2**
+columns (scrolling). Click a tile or an event to open that camera.
 
 **Single camera:**
 
@@ -87,7 +88,18 @@ bitrate in a camera's own settings, makes it last longer.
   options if no browser of yours needs it.
 * **Live:** WebRTC in the browser carries H.265 only where the browser supports it (Safari,
   recent Chrome with hardware decoding). The grid uses the sub stream, which is often H.264.
-* **HomeKit:** converted to H.264, see above.
+* **HomeKit:** converted to H.264, see above. Apple's newer camera spec (the *HomeKit Secure
+  Video Open Source Compatibility Guide*, a developer preview from June 2026, tvOS 27 hubs)
+  adds H.265. go2rtc does not support it yet (only an experimental pull request,
+  AlexxIT/go2rtc#2343). The integration will switch to it once go2rtc ships it.
+
+## HomeKit Secure Video (recording to iCloud)
+
+Not supported yet. HomeKit Secure Video needs the camera accessory to provide a recording stream
+and motion to the home hub. The official go2rtc release (1.9.15) only does live view.
+HKSV exists only in that experimental pull request and in forks. The integration
+already has the motion events (from the NVR's alarm stream) to feed it. HKSV is planned for
+when go2rtc supports it. Until then the recordings stay on the NVR and play in the panel.
 
 ## How playback works
 

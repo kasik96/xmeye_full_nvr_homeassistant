@@ -5,6 +5,11 @@
 const DAY = 86400;
 const SPEEDS = [1, 2, 4, 6, 12, 24];
 const SERVER_SPEED = 4; // from here on the server sends key frames only
+const GRID_LAYOUTS = [
+  ["fit", "All", "All cameras on screen"],
+  ["1", "1", "One column"],
+  ["2", "2", "Two columns"],
+];
 const MIN_SPAN = 300;
 
 const css = `
@@ -13,7 +18,7 @@ const css = `
 * { box-sizing:border-box; }
 [hidden] { display:none !important; }
 button { font:inherit; color:inherit; background:none; border:0; cursor:pointer; }
-.app { display:flex; flex-direction:column; height:100%; }
+.app { display:flex; flex-direction:column; height:100vh; height:100dvh; }
 header { display:flex; align-items:center; gap:8px; height:56px; padding:0 12px; flex:none;
   border-bottom:1px solid #1f2125; }
 header h1 { font-size:19px; font-weight:400; margin:0 10px 0 2px; letter-spacing:.3px; white-space:nowrap; }
@@ -32,6 +37,8 @@ header .logo { width:30px; height:30px; border-radius:8px; margin-left:4px; }
   .strip { padding:0 12px 6px; min-height:112px; }
   .ev, .ev .th { width:120px; } .ev .th { height:84px; }
   .gridwrap { padding:0 12px 12px; }
+  .camhead { padding-right:12px; }
+  .tile .name { top:6px; right:8px; font-size:11px; }
   .left { padding:8px; }
   .bar .icon.prev, .bar .icon.next { display:none; }
 }
@@ -40,6 +47,10 @@ main { flex:1; min-height:0; overflow:hidden; container-type:size; }
 main.scroll { overflow:auto; container-type:inline-size; }
 .gridview { display:flex; flex-direction:column; height:100%; }
 .gridwrap { flex:1; min-height:0; display:flex; justify-content:center; align-items:flex-start; padding:0 16px 16px; }
+.gridview.flow { height:auto; }
+.gridview.flow .gridwrap { flex:none; }
+.camhead { display:flex; align-items:center; justify-content:space-between; padding-right:16px; flex:none; }
+.small-seg button { padding:4px 11px; font-size:12px; }
 h2 { font-size:20px; font-weight:400; margin:14px 16px 8px; flex:none; }
 .strip { display:flex; gap:10px; overflow-x:auto; padding:0 16px 6px; scrollbar-width:thin; flex:none; min-height:128px; }
 .ev { flex:none; width:140px; text-align:center; font-size:12px; color:#bbb; }
@@ -143,7 +154,6 @@ td select { background:#1f2226; color:#e8e8ea; border:0; border-radius:6px; padd
   .player { flex:none; aspect-ratio:16/9; min-height:0; }
   aside { width:auto; border-left:0; border-top:1px solid #1f2125; }
   .item .th { flex:none; width:160px; }
-  .gridview { height:auto; }
 }
 `;
 
@@ -363,6 +373,11 @@ class XMeyePanel extends HTMLElement {
     this.muted = true;
     this.speed = 1;
     this.tab = "events";
+    // grid layout: "fit" (all cameras on screen), "1" or "2" columns
+    this.layout = "fit";
+    try {
+      this.layout = localStorage.getItem("xmeye.gridLayout") || "fit";
+    } catch (err) { /* private mode */ }
     this.tl = { start: 0, span: DAY };
     this.live = new Map(); // key -> LiveStream
     this.thumbs = new Map(); // url -> objectURL
@@ -466,9 +481,11 @@ class XMeyePanel extends HTMLElement {
     history.replaceState(null, "", location.pathname);
     const app = this.shadowRoot.querySelector(".app");
     app.innerHTML = `${this.header()}
-      <main class="${this.narrowLayout() ? "scroll" : ""}"><div class="gridview">
+      <main class="${this.layout === "fit" ? "" : "scroll"}"><div class="gridview ${this.layout === "fit" ? "" : "flow"}">
         <h2>Events</h2><div class="strip"></div>
-        <h2>Cameras</h2>
+        <div class="camhead"><h2>Cameras</h2>
+          <div class="seg small-seg">${GRID_LAYOUTS.map(([v, label, title]) => `<button data-layout="${v}" title="${title}" class="${this.layout === v ? "on" : ""}">${label}</button>`).join("")}</div>
+        </div>
         <div class="gridwrap"><div class="grid">${this.cameras
           .map(
             (c, i) => `<div class="tile" data-i="${i}">
@@ -498,6 +515,15 @@ class XMeyePanel extends HTMLElement {
       if (entity && !document.hidden) this.live.set(`grid-${entity}`, new LiveStream(this.hass, entity, video));
     });
     this.renderStrip();
+    app.querySelectorAll("[data-layout]").forEach((b) =>
+      b.addEventListener("click", () => {
+        this.layout = b.dataset.layout;
+        try {
+          localStorage.setItem("xmeye.gridLayout", this.layout);
+        } catch (err) { /* private mode */ }
+        this.showGrid();
+      })
+    );
     this.fitGrid();
     this.resizeObserver?.disconnect();
     this.resizeObserver = new ResizeObserver(() => this.fitGrid());
@@ -514,14 +540,16 @@ class XMeyePanel extends HTMLElement {
     const grid = wrap?.querySelector(".grid");
     if (!grid) return;
     const n = this.cameras.length || 1;
-    const gap = 10;
-    const W = wrap.clientWidth - 32;
-    const H = wrap.clientHeight - 16;
-    if (this.narrowLayout() || H < 120) {
-      grid.style.gridTemplateColumns = `repeat(${W > 520 ? 2 : 1}, minmax(0, 1fr))`;
+    const gap = this.narrowLayout() ? 6 : 10;
+    grid.style.gap = `${gap}px`;
+    if (this.layout !== "fit") {
+      grid.style.gridTemplateColumns = `repeat(${this.layout}, minmax(0, 1fr))`;
       grid.style.width = "100%";
       return;
     }
+    const W = wrap.clientWidth - (this.narrowLayout() ? 24 : 32);
+    const H = wrap.clientHeight - 12;
+    if (H < 80) return;
     let best = { w: 0, cols: 1 };
     for (let cols = 1; cols <= n; cols++) {
       const rows = Math.ceil(n / cols);
