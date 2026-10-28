@@ -1,0 +1,25 @@
+{
+  "domain": "xmeye",
+  "name": "XMeye NVR",
+  "codeowners": [
+    "@kasik96"
+  ],
+  "config_flow": true,
+  "dependencies": [
+    "ffmpeg",
+    "http",
+    "panel_custom",
+    "websocket_api"
+  ],
+  "documentation": "https://github.com/kasik96/xmeye_full_nvr_homeassistant",
+  "issue_tracker": "https://github.com/kasik96/xmeye_full_nvr_homeassistant/issues",
+  "iot_class": "local_polling",
+  "loggers": [
+    "custom_components.xmeye"
+  ],
+  "requirements": [],
+  "version": "0.2.0",
+  "after_dependencies": [
+    "go2rtc"
+  ]
+}
