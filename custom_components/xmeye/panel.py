@@ -24,9 +24,12 @@ async def async_setup(hass: HomeAssistant) -> None:
         hass,
         frontend_url_path="xmeye",
         webcomponent_name="xmeye-panel",
-        sidebar_title="NVR",
+        sidebar_title="XMeye Full NVR",
         sidebar_icon="mdi:cctv",
         module_url=f"{PANEL_URL}/xmeye-panel.js?v={version}",
         require_admin=False,
-        config={"hls": f"{PANEL_URL}/hls.light.min.js"},
+        config={
+            "hls": f"{PANEL_URL}/hls.light.min.js",
+            "logo": f"{PANEL_URL}/logo.png",
+        },
     )

@@ -30,6 +30,17 @@
 
   The payload is Annex-B. On garbage, resync on the next `00 00 01 F9..FE`.
 
+* Alarms: on a separate logged-in connection send 1500 `{Name:""}`. Messages 1504 then arrive:
+  `{"AlarmInfo":{"Channel":<0-based>,"Event":"VideoMotion"|"appEventHumanDetectAlarm","Status":"Start"|"Stop",
+  "StartTime":…}}`, plus the current state right after subscribing. Keep-alive as usual. Verified: the channel
+  matches `WorkState.AlarmState.VideoMotion` bit n.
+* Config: 1042 get / 1040 set. Use `Record.[i]` (`RecordMode` `ConfigRecord|ManualRecord|ClosedRecord`, `Mask[day][0]`
+  bit 1 regular, 2 motion, 4 alarm, `TimeSection[day][0]` `"1 00:00:00-24:00:00"`) and `Detect.MotionDetect.[i]`
+  (`Enable`, `Level` 1–6). 1020 `StorageInfo` (`TotalSpace`/`RemainSpace` MB hex, `OldStartTime`), `WorkState`
+  (`ChannelState[i].Bitrate` kbit/s).
+* `OPPlayBack` `Start` is paced in real time. `Fast` with `Value` did not speed it up reliably. `OPFileQuery`
+  `StreamType` 1 (sub stream) found nothing: this NVR records the main stream only.
+
 ## Live
 
 RTSP `rtsp://<host>:554/user=<u>&password=<p>&channel=<1-based>&stream=<0 main|1 sub>.sdp?`.
@@ -41,7 +52,9 @@ makes a stream that reads from itself.
 
 ## Playback pipeline (`playback.py`)
 
-1. `DVRIPClient.download()` from the requested second to the end of the file.
+1. `DVRIPClient.download()` from the requested second to the end of the file. The video clock is built from the
+   I-frames' 1-second time stamps (frame rate measured over ≥ 6 s; gaps > 10 s jump the clock). From 4× only
+   I-frames are passed, with PTS divided by the speed.
 2. `FrameParser` splits the frames. The first 50 video frames are buffered to learn fps, codec and whether
    there is audio.
 3. Video → `tsmux.TsMuxer` (MPEG-TS, PTS = frame × 90000 / fps) → ffmpeg stdin. Audio (raw G.711) goes to
@@ -51,6 +64,14 @@ makes a stream that reads from itself.
    without HA auth: the random token is the authorization, like HA's own stream URLs. The playlist is
    returned once two segments exist, with `#EXT-X-START:TIME-OFFSET=0` so players start at the beginning.
 
+## HomeKit (`homekit.py`)
+
+A second go2rtc (`shutil.which("go2rtc")`) runs with `.storage/xmeye_homekit_go2rtc.yaml`: modules `api`, `homekit`,
+`rtsp`, `srtp`. `api.listen` is `:51830` with `allow_paths` limited to the HAP endpoints, the RTSP server is off,
+SRTP is on `:51831` (HA's go2rtc has 8443). Streams are `hk_<serial>_<ch>` pointing at HA's restream. go2rtc writes
+the pairings back into that file; the integration keeps them when it rewrites it. Per-camera on/off and PIN live in
+`.storage/xmeye.homekit`. go2rtc's mDNS only answers queries (no announcements).
+
 ## Panel API
 
 | WebSocket | Returns |
@@ -58,7 +79,11 @@ makes a stream that reads from itself.
 | `xmeye/cameras` | cameras with `entry_id`, `channel`, `name`, `entity_id`, `sub_entity_id` |
 | `xmeye/day {entry_id, channel, date?}` | `recordings`, `events` (merged motion), `days` with footage |
 | `xmeye/events {hours, limit}` | recent events of all cameras |
-| `xmeye/play {entry_id, channel, time}` | HLS `url`, `begin`, `end` of the file being played |
+| `xmeye/play {entry_id, channel, time, speed}` | HLS `url`, `begin`, `end`, `speed` the server applied (1 or ≥ 4) |
+| `xmeye/nvr {entry_id}` (admin) | system, storage, work state, record and motion config, titles |
+| `xmeye/settings_set {entry_id, channel, record?, motion_enabled?, motion_level?}` (admin) | writes to the NVR |
+| `xmeye/homekit`, `xmeye/homekit_set {key, enabled?, reset?}` (admin) | HomeKit status / switch / unpair |
+| `xmeye/probe {entry_id, channel, time, seconds}` (admin) | diagnostics: real frame rate and download speed |
 
 `GET /api/xmeye/thumb/<entry_id>/<channel>/<YYYYmmddHHMMSS>.jpg` (HA auth) returns an event thumbnail.
 

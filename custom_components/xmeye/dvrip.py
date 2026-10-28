@@ -25,6 +25,7 @@ HEADER = struct.Struct("<BB2xIIBBHI")
 MSG_LOGIN = 1000
 MSG_KEEPALIVE = 1006
 MSG_INFO = 1020
+MSG_CONFIG_SET = 1040
 MSG_CONFIG_GET = 1042
 MSG_CHANNEL_TITLE = 1048
 MSG_PLAYBACK = 1420
@@ -33,6 +34,7 @@ MSG_PLAYBACK_DATA = 1422
 MSG_DOWNLOAD_DATA = 1426
 MSG_FILE_QUERY = 1440
 MSG_CALENDAR = 1446
+MSG_LOG_QUERY = 1442
 
 RET_OK = (100, 515)
 RET_NO_FILES = (109, 119)
@@ -271,6 +273,50 @@ class DVRIPClient:
         reply = await self.request(MSG_INFO, {"Name": "SystemInfo"})
         return reply.get("SystemInfo") or {}
 
+    async def log(self, begin: datetime, end: datetime, kind: str = "LogAll") -> list[dict]:
+        """System log entries (newest first, max 128 per call)."""
+        out: list[dict] = []
+        position = 0
+        while True:
+            reply = await self.request(
+                MSG_LOG_QUERY,
+                {
+                    "Name": "OPLogQuery",
+                    "OPLogQuery": {
+                        "BeginTime": begin.strftime(TIME_FORMAT),
+                        "EndTime": end.strftime(TIME_FORMAT),
+                        "LogPosition": position,
+                        "Type": kind,
+                    },
+                },
+            )
+            page = reply.get("OPLogQuery") or []
+            if reply.get("Ret") not in RET_OK or not page:
+                return out
+            out += page
+            position = max(int(e.get("Position", 0)) for e in page) + 1
+            if len(page) < 128 or len(out) > 20000:
+                return out
+
+    async def info(self, name: str) -> Any:
+        """1020 info: SystemInfo, StorageInfo, WorkState, …"""
+        reply = await self.request(MSG_INFO, {"Name": name})
+        if reply.get("Ret") not in RET_OK:
+            raise DVRIPError(f"{name}: Ret {reply.get('Ret')}")
+        return reply.get(name)
+
+    async def config_get(self, name: str) -> Any:
+        reply = await self.request(MSG_CONFIG_GET, {"Name": name})
+        if reply.get("Ret") not in RET_OK:
+            raise DVRIPError(f"{name}: Ret {reply.get('Ret')}")
+        return reply.get(name)
+
+    async def config_set(self, name: str, value: Any) -> None:
+        """Write one config; use "Name.[i]" for a single channel's element."""
+        reply = await self.request(MSG_CONFIG_SET, {"Name": name, name: value})
+        if reply.get("Ret") not in RET_OK:
+            raise DVRIPError(f"setting {name} failed (Ret {reply.get('Ret')})")
+
     async def channel_titles(self) -> list[str]:
         reply = await self.request(MSG_CHANNEL_TITLE, {"Name": "ChannelTitle"})
         return [str(t).strip() for t in reply.get("ChannelTitle") or []]
@@ -339,7 +385,11 @@ class DVRIPClient:
 
     @contextlib.asynccontextmanager
     async def download(
-        self, rec: Recording, start: datetime | None = None
+        self,
+        rec: Recording,
+        start: datetime | None = None,
+        action: str = "DownloadStart",
+        then: dict[str, Any] | None = None,
     ) -> AsyncIterator[AsyncIterator[bytes]]:
         """Stream a recording's raw bytes (Xiongmai frame format).
 
@@ -362,6 +412,11 @@ class DVRIPClient:
             "Parameter": params,
         }
         keepalive: asyncio.Task | None = None
+
+        async def control_request(extra: dict[str, Any]) -> dict[str, Any]:
+            op = {**body, **extra, "Parameter": {**params, **extra.get("Parameter", {})}}
+            return await control.request(MSG_PLAYBACK, {"Name": "OPPlayBack", "OPPlayBack": op})
+
         try:
             data = await Connection.open(self.host, self.port)
             data.session = control.session
@@ -373,10 +428,14 @@ class DVRIPClient:
                 raise DVRIPError(f"playback claim failed (Ret {reply.get('Ret')})")
             reply = await control.request(
                 MSG_PLAYBACK,
-                {"Name": "OPPlayBack", "OPPlayBack": {"Action": "DownloadStart", **body}},
+                {"Name": "OPPlayBack", "OPPlayBack": {"Action": action, **body}},
             )
             if reply.get("Ret") not in RET_OK:
                 raise DVRIPError(f"download start failed (Ret {reply.get('Ret')})")
+            if then:
+                # e.g. {"Action": "Fast", "Parameter": {"Value": n}} on a paced "Start"
+                reply = await control_request(then)
+                _LOGGER.debug("Playback control %s -> %s", then, reply)
 
             async def _keepalive() -> None:
                 while True:
@@ -404,7 +463,13 @@ class DVRIPClient:
             with contextlib.suppress(Exception):
                 await control.send(
                     MSG_PLAYBACK,
-                    {"Name": "OPPlayBack", "OPPlayBack": {"Action": "DownloadStop", **body}},
+                    {
+                    "Name": "OPPlayBack",
+                    "OPPlayBack": {
+                        "Action": "DownloadStop" if action == "DownloadStart" else "Stop",
+                        **body,
+                    },
+                },
                 )
             if data:
                 await data.close()
@@ -431,6 +496,7 @@ class Frame:
     data: bytes  # payload without the Xiongmai header
     codec: int = 0  # video codec (I-frames) or audio codec
     fps: int = 0  # I-frames only
+    stamp: int = 0  # I-frames only: packed local date/time, 1 s resolution
 
 
 class FrameParser:
@@ -468,7 +534,13 @@ class FrameParser:
                 break
             payload = bytes(buf[pos + hdr : pos + hdr + size])
             if kind in FRAME_I:
-                frame = Frame(kind, payload, buf[pos + 4] & 0x0F, buf[pos + 5])
+                frame = Frame(
+                    kind,
+                    payload,
+                    buf[pos + 4] & 0x0F,
+                    buf[pos + 5],
+                    int.from_bytes(buf[pos + 8 : pos + 12], "little"),
+                )
             elif kind in (FRAME_AUDIO, FRAME_INFO):
                 frame = Frame(kind, payload, buf[pos + 4])
             else:
@@ -489,3 +561,18 @@ class FrameParser:
             if idx + 3 >= len(buf):
                 return idx
             start = idx + 1
+
+
+def stamp_seconds(stamp: int) -> int:
+    """Seconds since 2000-01-01 of a packed I-frame time (good for differences)."""
+    second = stamp & 0x3F
+    minute = (stamp >> 6) & 0x3F
+    hour = (stamp >> 12) & 0x1F
+    day = (stamp >> 17) & 0x1F
+    month = (stamp >> 22) & 0x0F
+    year = 2000 + (stamp >> 26)
+    try:
+        moment = datetime(year, month, day, hour, minute, second)
+    except ValueError:
+        return 0
+    return int((moment - datetime(2000, 1, 1)).total_seconds())

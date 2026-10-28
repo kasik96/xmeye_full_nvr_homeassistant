@@ -1,12 +1,17 @@
-# XMeye NVR for Home Assistant
+# XMeye Full NVR for Home Assistant
+
+<img src="custom_components/xmeye/brand/icon.png" width="96" align="right" alt="">
 
 One integration for a Xiongmai / XMeye NVR:
 
 * **Live cameras** for every NVR channel (main stream, plus a hidden sub-stream camera),
   with low-latency WebRTC through Home Assistant's built-in go2rtc.
-* **HomeKit-ready**: the cameras' stream comes from go2rtc's local RTSP restream, so
-  Home Assistant's HomeKit Bridge can expose them (video copied, no transcoding) while
-  the NVR sees one connection per stream.
+* **HomeKit** without transcoding: switch cameras on in the panel's settings and pair them
+  with the code shown there. A dedicated go2rtc serves them to Apple Home.
+* **Motion sensors** per camera from the NVR's live alarm stream (`binary_sensor.<camera>_motion`;
+  a person sensor is created disabled, for cameras that report people to the NVR).
+* **NVR settings** in the panel: recording mode per camera (always / motion only / off),
+  motion detection and sensitivity, disk usage and how many days the disk holds.
 * **Recordings stay on the NVR.** Nothing is recorded into Home Assistant. A sidebar
   panel shows them on a timeline with motion events and thumbnails and plays them on demand.
 
@@ -14,11 +19,11 @@ Talks the NVR's own DVRIP protocol (port 34567, what the XMeye app uses) for rec
 and its RTSP server (port 554) for live video. Tested on an NBD88X16S-KL-V3 NVR,
 firmware V4.03.R11, with H.264 cameras, on Home Assistant 2026.10.
 
-## The NVR panel
+## The panel (sidebar → XMeye Full NVR)
 
 **Grid:** the newest motion events of all cameras along the top (thumbnail and time),
-and a live tile for every camera below (sub stream, muted). Click a tile or an event to
-open that camera.
+and a live tile for every camera below (sub stream, muted), sized so all cameras fit on the
+screen. Click a tile or an event to open that camera.
 
 **Single camera:**
 
@@ -26,9 +31,14 @@ open that camera.
 * Timeline of the selected day: continuous recording in grey, motion in blue. Click to
   play from that moment. Scroll to zoom, drag to pan, or use the + / − buttons.
   Playback goes on into the next file.
-* Event list with thumbnails (adjacent motion files merged into one event). A day picker
-  covers every day the NVR has footage for. The **Live** button returns to the live view.
+* Playback speed 1×, 2×, 4×, 6×, 12×, 24×.
+* **Events** tab (motion, with thumbnails) and **Recordings** tab (everything, per hour).
+  A day picker covers every day the NVR has footage for. The **Live** button returns to the
+  live view.
 * Camera chips, previous / next camera, mute and fullscreen.
+
+**Settings** (admins): disk, retention and bitrate per camera, recording mode, motion
+detection, HomeKit on/off with pairing code.
 
 The panel works on phones too. The event list moves below the player.
 
@@ -45,13 +55,25 @@ channel), and whether H.265 recordings are transcoded to H.264 for playback.
 
 ## HomeKit
 
-Add a **HomeKit Bridge** in *accessory mode* for a camera entity (one per camera) and set
-its video codec to *copy*. The camera's stream source is
-`rtsp://127.0.0.1:18554/xmeye-nvr-<serial>-<channel>` (go2rtc's restream). HomeKit,
-WebRTC viewers and snapshots therefore share the same NVR connection.
+Home Assistant's own go2rtc runs without its HomeKit module, so the integration starts a
+second go2rtc (the binary that ships with Home Assistant OS and the container) just for
+HomeKit. It listens on port 51830 (HomeKit) and 51831 (SRTP video). Only the HomeKit
+pairing endpoints are reachable from the network; go2rtc's API and streams are not. It
+reads the main streams from HA's go2rtc RTSP restream, so video is not transcoded and
+the NVR still sees one connection per stream.
 
-Without the built-in go2rtc (e.g. a core install without the go2rtc binary), the cameras
-use the NVR's RTSP URL directly.
+1. Panel → **Settings** → turn **HomeKit** on for a camera.
+2. Apple Home → **Add Accessory → More options**, pick the camera and enter the code
+   shown in the panel.
+
+The panel shows when a camera is paired and can unpair it (a new code is created).
+Without go2rtc in the system, use Home Assistant's HomeKit Bridge on the camera entities instead.
+
+## Recording time and disk
+
+The panel's settings show how many days the disk holds. That figure is disk size ÷
+(sum of the cameras' bitrates). *Motion only* recording for quiet cameras, or a lower
+bitrate in a camera's own settings, makes it last longer.
 
 ## How playback works
 
@@ -62,8 +84,18 @@ clips start in about 2 s. A 2560×1440 stream downloads about 2.5× faster than 
 The segments sit in a temporary directory only while someone is watching. They are
 deleted 2 minutes after the last request, and at shutdown and startup.
 
+Video timing comes from the NVR's per-I-frame time stamps (the frame rate in the header
+is not always right). For 1–2× the browser speeds up playback. From 4× the server sends
+only key frames on a compressed time line. Downloads from the NVR run at about
+1 MB/s, so the real top speed is about 8 Mbit/s ÷ the camera's bitrate: a 0.5 Mbit/s camera
+does 24×, a 5 Mbit/s camera about 1.5×.
+
 Thumbnails are the first I-frame two seconds into an event (one short download each).
 They are kept in memory.
+
+Motion events come from the NVR's live alarm stream and are stored in Home Assistant (times
+only, 14 days). For the time before that, short motion-tagged files are used. Long `[M]`
+files from continuous recording don't say when the motion happened.
 
 See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the protocol details and the design.
 
@@ -81,8 +113,7 @@ format) for every download. It has no RTSP server, so live tiles stay empty.
 
 * Seeking inside a recording works within what has already been downloaded. Clicking
   the timeline starts a new download at that point instead.
-* Video timing comes from the frame rate in the NVR's frame header. A camera that
-  reports 20 fps but sends 19.7 plays about 1 % fast.
+* Fast playback is limited by the NVR's download speed (see above).
 * Only H.264 has been tested. The H.265 path (copy with `hvc1` tag, or libx264
   transcode) is untested.
 

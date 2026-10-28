@@ -1,4 +1,4 @@
-"""Constants for the XMeye NVR integration."""
+"""Constants for the XMeye Full NVR integration."""
 
 from datetime import timedelta
 
@@ -25,6 +25,8 @@ CACHE_PAST = 600
 
 # Motion files closer than this are one event
 EVENT_MERGE_GAP = timedelta(seconds=5)
+# Longer [M] files are continuous recording, not a motion clip
+MOTION_FILE_MAX = 600
 
 # Event thumbnails
 THUMB_CACHE = 800

@@ -1,6 +1,6 @@
 {
   "domain": "xmeye",
-  "name": "XMeye NVR",
+  "name": "XMeye Full NVR",
   "codeowners": [
     "@kasik96"
   ],
@@ -18,7 +18,7 @@
     "custom_components.xmeye"
   ],
   "requirements": [],
-  "version": "0.2.0",
+  "version": "0.3.0",
   "after_dependencies": [
     "go2rtc"
   ]

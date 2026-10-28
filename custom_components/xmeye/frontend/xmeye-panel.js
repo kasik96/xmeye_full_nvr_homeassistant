@@ -1,8 +1,10 @@
-// XMeye NVR panel: live grid, single camera with recordings timeline and events.
+// XMeye Full NVR panel: live grid, single camera with recordings timeline and events.
 // Plain web component, no build step. Live video uses HA's camera WebRTC
 // (go2rtc); recordings are HLS sessions from the integration, played with hls.js.
 
 const DAY = 86400;
+const SPEEDS = [1, 2, 4, 6, 12, 24];
+const SERVER_SPEED = 4; // from here on the server sends key frames only
 const MIN_SPAN = 300;
 
 const css = `
@@ -14,7 +16,8 @@ button { font:inherit; color:inherit; background:none; border:0; cursor:pointer;
 .app { display:flex; flex-direction:column; height:100%; }
 header { display:flex; align-items:center; gap:8px; height:56px; padding:0 12px; flex:none;
   border-bottom:1px solid #1f2125; }
-header h1 { font-size:20px; font-weight:400; margin:0 8px 0 4px; letter-spacing:.3px; }
+header h1 { font-size:19px; font-weight:400; margin:0 10px 0 2px; letter-spacing:.3px; white-space:nowrap; }
+header .logo { width:30px; height:30px; border-radius:8px; margin-left:4px; }
 .icon { width:40px; height:40px; border-radius:50%; display:grid; place-items:center; }
 .icon:hover { background:#1d1f23; }
 .icon svg { width:22px; height:22px; fill:currentColor; }
@@ -22,9 +25,12 @@ header h1 { font-size:20px; font-weight:400; margin:0 8px 0 4px; letter-spacing:
 .seg { display:flex; background:#1a1c20; border-radius:20px; padding:3px; }
 .seg button { padding:6px 14px; border-radius:16px; font-size:13px; color:#aab; }
 .seg button.on { background:#2d6cdf; color:#fff; }
-main { flex:1; overflow:auto; container-type:inline-size; }
-h2 { font-size:22px; font-weight:400; margin:18px 16px 10px; }
-.strip { display:flex; gap:10px; overflow-x:auto; padding:0 16px 8px; scrollbar-width:thin; }
+main { flex:1; min-height:0; overflow:hidden; container-type:size; }
+main.scroll { overflow:auto; container-type:inline-size; }
+.gridview { display:flex; flex-direction:column; height:100%; }
+.gridwrap { flex:1; min-height:0; display:flex; justify-content:center; align-items:flex-start; padding:0 16px 16px; }
+h2 { font-size:20px; font-weight:400; margin:14px 16px 8px; flex:none; }
+.strip { display:flex; gap:10px; overflow-x:auto; padding:0 16px 6px; scrollbar-width:thin; flex:none; min-height:128px; }
 .ev { flex:none; width:140px; text-align:center; font-size:12px; color:#bbb; }
 .ev .th { width:140px; height:100px; border-radius:10px; background:#1b1d21 center/cover; position:relative;
   overflow:hidden; }
@@ -32,8 +38,7 @@ h2 { font-size:22px; font-weight:400; margin:18px 16px 10px; }
 .ev .cam { position:absolute; left:6px; bottom:5px; font-size:11px; color:#fff;
   text-shadow:0 1px 3px #000; }
 .ev div.t { margin-top:6px; }
-.grid { display:grid; gap:12px; padding:0 16px 24px;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 380px), 1fr)); }
+.grid { display:grid; gap:10px; }
 .tile { position:relative; aspect-ratio:16/9; border-radius:12px; overflow:hidden; background:#000;
   cursor:pointer; }
 .tile video, .tile img.poster { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
@@ -42,14 +47,14 @@ h2 { font-size:22px; font-weight:400; margin:18px 16px 10px; }
   align-items:center; gap:6px; }
 .dot { width:9px; height:9px; border-radius:50%; background:#e5484d; display:inline-block; }
 .dot.off { background:#666; }
-.single { display:flex; min-height:100%; }
-.left { flex:1; display:flex; flex-direction:column; min-width:0; padding:12px; gap:10px; }
+.single { display:flex; height:100%; }
+.left { flex:1; display:flex; flex-direction:column; min-width:0; min-height:0; padding:12px; gap:10px; }
 .chips { display:flex; gap:6px; overflow-x:auto; flex:none; scrollbar-width:none; }
 .chip { padding:6px 12px; border-radius:16px; background:#1a1c20; font-size:13px; white-space:nowrap; }
 .chip.on { background:#2d6cdf; color:#fff; }
-.player { position:relative; flex:none; width:100%; aspect-ratio:16/9;
-  max-height:calc(100vh - 230px); background:#000; border-radius:12px; overflow:hidden; }
-.player:fullscreen { max-height:none; border-radius:0; }
+.player { position:relative; flex:1; min-height:160px; width:100%; background:#000; border-radius:12px; overflow:hidden; }
+.player:fullscreen { border-radius:0; }
+.speed { background:#0008; color:#fff; border:1px solid #fff4; border-radius:14px; padding:4px 8px; font:inherit; font-size:13px; }
 .player video { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; background:#000; }
 .bar { position:absolute; left:0; right:0; bottom:0; display:flex; align-items:center; gap:10px;
   padding:10px 12px; background:linear-gradient(transparent, rgba(0,0,0,.75)); }
@@ -71,25 +76,48 @@ h2 { font-size:22px; font-weight:400; margin:18px 16px 10px; }
   padding:1px 4px; border-radius:3px; pointer-events:none; white-space:nowrap; }
 .ticks { position:relative; height:14px; font-size:10px; color:#777; }
 .ticks span { position:absolute; transform:translateX(-50%); }
-aside { width:340px; flex:none; border-left:1px solid #1f2125; display:flex; flex-direction:column;
-  height:calc(100vh - 56px); position:sticky; top:0; }
-aside .head { padding:14px 16px 8px; font-size:13px; letter-spacing:1px; color:#9ab; text-transform:uppercase; }
-.list { flex:1; overflow-y:auto; padding:0 10px 80px; }
+aside { width:340px; flex:none; border-left:1px solid #1f2125; display:flex; flex-direction:column; min-height:0; }
+.tabs { display:flex; flex:none; border-bottom:1px solid #1f2125; }
+.tabs button { flex:1; padding:14px 0 12px; font-size:13px; letter-spacing:1px; color:#9ab; text-transform:uppercase;
+  border-bottom:2px solid transparent; }
+.tabs button.on { color:#fff; border-color:#2d6cdf; }
+.list { flex:1; overflow-y:auto; padding:6px 10px 24px; }
 .item { display:flex; gap:10px; padding:8px; border-radius:10px; cursor:pointer; align-items:center; }
 .item:hover { background:#1a1c20; } .item.on { background:#1d2a44; }
 .item .meta { width:86px; flex:none; font-size:13px; } .item .meta div+div { color:#999; font-size:12px; margin-top:2px; }
 .item .th { flex:1; aspect-ratio:16/9; border-radius:8px; background:#1b1d21; overflow:hidden; }
 .item .th img { width:100%; height:100%; object-fit:cover; display:block; }
 .empty { color:#777; font-size:13px; padding:16px; }
+.kind { display:inline-block; font-size:10px; padding:1px 6px; border-radius:8px; background:#2d6cdf33; color:#9cf; margin-top:4px; }
+.settings { max-width:1100px; margin:0 auto; padding:8px 16px 32px; }
+.card { background:#16181b; border-radius:12px; padding:14px 16px; margin:12px 0; }
+.card h3 { margin:0 0 10px; font-size:15px; font-weight:500; }
+.stats { display:flex; flex-wrap:wrap; gap:22px; font-size:13px; color:#aaa; }
+.stats b { display:block; color:#fff; font-size:20px; font-weight:400; }
+.bar2 { height:8px; background:#0f1012; border-radius:4px; overflow:hidden; margin-top:10px; }
+.bar2 div { height:100%; background:#2d6cdf; }
+table { width:100%; border-collapse:collapse; font-size:13px; }
+th { text-align:left; color:#8a93a3; font-weight:400; padding:6px 8px; white-space:nowrap; }
+td { padding:8px; border-top:1px solid #22252a; vertical-align:middle; }
+td select { background:#1f2226; color:#e8e8ea; border:0; border-radius:6px; padding:5px 6px; font:inherit; }
+.pin { font-family:ui-monospace,monospace; font-size:14px; letter-spacing:1px; }
+.ok { color:#4ade80; } .muted { color:#888; } .err { color:#f87171; }
+.small { font-size:12px; color:#888; }
+.btn { padding:5px 10px; border-radius:14px; background:#23262b; font-size:12px; }
+.btn:hover { background:#2d3138; }
+.switch { position:relative; width:38px; height:22px; border-radius:11px; background:#3a3f47; flex:none; display:inline-block; vertical-align:middle; }
+.switch::after { content:""; position:absolute; top:3px; left:3px; width:16px; height:16px; border-radius:50%; background:#fff; transition:left .15s; }
+.switch.on { background:#2d6cdf; } .switch.on::after { left:19px; }
 .live { position:absolute; right:12px; top:12px; background:#fff; color:#d33; border-radius:20px;
   padding:8px 16px; font-weight:500; box-shadow:0 2px 8px #0008; }
 .live.hidden { display:none; }
 @container (max-width: 820px) {
-  .single { flex-direction:column; }
-  .player { max-height:none; }
-  aside { width:auto; height:auto; position:static; border-left:0; border-top:1px solid #1f2125; }
-  .list { padding-bottom:16px; }
+  .single { flex-direction:column; height:auto; }
+  .left { flex:none; }
+  .player { flex:none; aspect-ratio:16/9; min-height:0; }
+  aside { width:auto; border-left:0; border-top:1px solid #1f2125; }
   .item .th { flex:none; width:160px; }
+  .gridview { height:auto; }
 }
 `;
 
@@ -255,6 +283,7 @@ function loadHls(url) {
 }
 
 let hlsUrl = "/xmeye_static/hls.light.min.js";
+let logoUrl = "/xmeye_static/logo.png";
 
 /** Play an HLS URL in a <video>; returns the hls.js instance (or null). */
 async function attachHls(video, url, options = {}) {
@@ -276,6 +305,14 @@ async function attachHls(video, url, options = {}) {
   return hls;
 }
 
+function alertBox(root, text) {
+  const el = document.createElement("div");
+  el.className = "card err";
+  el.textContent = text;
+  root.prepend(el);
+  setTimeout(() => el.remove(), 6000);
+}
+
 class XMeyePanel extends HTMLElement {
   constructor() {
     super();
@@ -288,6 +325,8 @@ class XMeyePanel extends HTMLElement {
     this.date = today();
     this.playing = null; // {begin, end, url}
     this.muted = true;
+    this.speed = 1;
+    this.tab = "events";
     this.tl = { start: 0, span: DAY };
     this.live = new Map(); // key -> LiveStream
     this.thumbs = new Map(); // url -> objectURL
@@ -303,6 +342,7 @@ class XMeyePanel extends HTMLElement {
   set panel(p) {
     this._panel = p;
     if (p?.config?.hls) hlsUrl = p.config.hls;
+    if (p?.config?.logo) logoUrl = p.config.logo;
   }
 
   async init() {
@@ -316,6 +356,7 @@ class XMeyePanel extends HTMLElement {
     const params = new URLSearchParams(location.search);
     const cam = this.cameras.findIndex((c) => `${c.entry_id}-${c.channel}` === params.get("camera"));
     if (cam >= 0) this.openCamera(cam);
+    else if (params.get("view") === "settings" && this.hass.user?.is_admin) this.showSettings();
     else this.showGrid();
     this.refreshEvents();
     this.eventsTimer = setInterval(() => this.refreshEvents(), 60000);
@@ -330,6 +371,8 @@ class XMeyePanel extends HTMLElement {
 
   disconnectedCallback() {
     clearInterval(this.tick);
+    clearTimeout(this.hkTimer);
+    this.resizeObserver?.disconnect();
     clearInterval(this.eventsTimer);
     document.removeEventListener("visibilitychange", this.onVisibility);
     this.closeLive();
@@ -354,10 +397,12 @@ class XMeyePanel extends HTMLElement {
   header(extra = "") {
     return `<header>
       <button class="icon menu" ${this._narrow ? "" : "hidden"}>${icon("menu")}</button>
-      <h1>NVR</h1>
+      <img class="logo" src="${logoUrl}" alt="">
+      <h1>XMeye Full NVR</h1>
       <div class="seg">
         <button data-view="grid" class="${this.view === "grid" ? "on" : ""}">Grid</button>
         <button data-view="single" class="${this.view === "single" ? "on" : ""}">Single</button>
+        ${this.hass.user?.is_admin ? `<button data-view="settings" class="${this.view === "settings" ? "on" : ""}">Settings</button>` : ""}
       </div>
       <div class="spacer"></div>${extra}
     </header>`;
@@ -370,6 +415,7 @@ class XMeyePanel extends HTMLElement {
     root.querySelectorAll("[data-view]").forEach((b) =>
       b.addEventListener("click", () => {
         if (b.dataset.view === "grid") this.showGrid();
+        else if (b.dataset.view === "settings") this.showSettings();
         else this.openCamera(this.current ?? 0);
       })
     );
@@ -384,10 +430,10 @@ class XMeyePanel extends HTMLElement {
     history.replaceState(null, "", location.pathname);
     const app = this.shadowRoot.querySelector(".app");
     app.innerHTML = `${this.header()}
-      <main>
+      <main class="${this.narrowLayout() ? "scroll" : ""}"><div class="gridview">
         <h2>Events</h2><div class="strip"></div>
         <h2>Cameras</h2>
-        <div class="grid">${this.cameras
+        <div class="gridwrap"><div class="grid">${this.cameras
           .map(
             (c, i) => `<div class="tile" data-i="${i}">
               <img class="poster" alt="">
@@ -395,9 +441,9 @@ class XMeyePanel extends HTMLElement {
               <div class="name">${c.name}<span class="dot off"></span></div>
             </div>`
           )
-          .join("")}</div>
-        ${this.cameras.length ? "" : `<div class="empty">No cameras. Add the XMeye NVR integration first.</div>`}
-      </main>`;
+          .join("")}</div></div>
+        ${this.cameras.length ? "" : `<div class="empty">No cameras. Add the XMeye Full NVR integration first.</div>`}
+      </div></main>`;
     this.bindHeader(app);
     app.querySelectorAll(".tile").forEach((tile) => {
       const cam = this.cameras[tile.dataset.i];
@@ -416,6 +462,38 @@ class XMeyePanel extends HTMLElement {
       if (entity && !document.hidden) this.live.set(`grid-${entity}`, new LiveStream(this.hass, entity, video));
     });
     this.renderStrip();
+    this.fitGrid();
+    this.resizeObserver?.disconnect();
+    this.resizeObserver = new ResizeObserver(() => this.fitGrid());
+    this.resizeObserver.observe(app.querySelector(".gridwrap"));
+  }
+
+  narrowLayout() {
+    return this.clientWidth < 820;
+  }
+
+  /** Largest 16:9 tiles that fit all cameras into the space without scrolling. */
+  fitGrid() {
+    const wrap = this.shadowRoot.querySelector(".gridwrap");
+    const grid = wrap?.querySelector(".grid");
+    if (!grid) return;
+    const n = this.cameras.length || 1;
+    const gap = 10;
+    const W = wrap.clientWidth - 32;
+    const H = wrap.clientHeight - 16;
+    if (this.narrowLayout() || H < 120) {
+      grid.style.gridTemplateColumns = `repeat(${W > 520 ? 2 : 1}, minmax(0, 1fr))`;
+      grid.style.width = "100%";
+      return;
+    }
+    let best = { w: 0, cols: 1 };
+    for (let cols = 1; cols <= n; cols++) {
+      const rows = Math.ceil(n / cols);
+      const w = Math.min((W - gap * (cols - 1)) / cols, ((H - gap * (rows - 1)) / rows) * (16 / 9));
+      if (w > best.w) best = { w, cols };
+    }
+    grid.style.gridTemplateColumns = `repeat(${best.cols}, ${Math.floor(best.w)}px)`;
+    grid.style.width = "auto";
   }
 
   async refreshEvents() {
@@ -494,6 +572,142 @@ class XMeyePanel extends HTMLElement {
     } catch (err) { /* no thumbnail */ }
   }
 
+  // ------------------------------------------------------------ settings
+
+  async showSettings() {
+    this.view = "settings";
+    this.stopPlayback();
+    this.closeLive();
+    history.replaceState(null, "", `${location.pathname}?view=settings`);
+    const app = this.shadowRoot.querySelector(".app");
+    app.innerHTML = `${this.header()}<main class="scroll"><div class="settings"><div class="empty">Loading NVR settings…</div></div></main>`;
+    this.bindHeader(app);
+    const conn = this.hass.connection;
+    const entries = [...new Set(this.cameras.map((c) => c.entry_id))];
+    try {
+      this.nvr = {};
+      for (const id of entries) this.nvr[id] = await conn.sendMessagePromise({ type: "xmeye/nvr", entry_id: id });
+      this.homekit = await conn.sendMessagePromise({ type: "xmeye/homekit" });
+    } catch (err) {
+      app.querySelector(".settings").innerHTML = `<div class="empty err">Could not read the NVR: ${err.message}</div>`;
+      return;
+    }
+    this.renderSettings();
+  }
+
+  recordMode(rec) {
+    if (!rec || rec.error) return "?";
+    if (rec.RecordMode === "ClosedRecord") return "off";
+    if (rec.RecordMode === "ManualRecord") return "manual";
+    const mask = parseInt(rec.Mask?.[0]?.[0] ?? "0", 16);
+    return mask & 1 ? "always" : mask & 6 ? "motion" : "off";
+  }
+
+  renderSettings() {
+    const root = this.shadowRoot.querySelector(".settings");
+    if (!root || this.view !== "settings") return;
+    const hk = this.homekit ?? { cameras: [] };
+    let html = "";
+    for (const [entryId, st] of Object.entries(this.nvr)) {
+      const cams = this.cameras.filter((c) => c.entry_id === entryId);
+      const parts = (st.storage || []).flatMap((d) => d.Partition || []).filter((p) => parseInt(p.TotalSpace, 16) > 0);
+      const total = parts.reduce((a, p) => a + parseInt(p.TotalSpace, 16), 0) / 1024;
+      const free = parts.reduce((a, p) => a + parseInt(p.RemainSpace, 16), 0) / 1024;
+      const oldest = parts.map((p) => p.OldStartTime).filter((t) => t && !t.startsWith("0000")).sort()[0];
+      const days = oldest ? (Date.now() - new Date(oldest.replace(" ", "T"))) / 864e5 : null;
+      const rates = (st.work?.ChannelState || []).map((c) => c.Bitrate || 0);
+      const kbps = rates.reduce((a, b) => a + b, 0);
+      const perDay = (kbps * 1000 / 8 * 86400) / 1e9;
+      html += `<div class="card"><h3>${st.system?.HardWare ?? "NVR"} <span class="small">firmware ${st.system?.SoftWareVersion ?? "?"}</span></h3>
+        <div class="stats">
+          <div><b>${total.toFixed(0)} GB</b>disk${free < 1 ? ", full (overwriting)" : `, ${free.toFixed(0)} GB free`}</div>
+          <div><b>${days ? days.toFixed(1) : "?"} days</b>of recordings (oldest ${oldest ?? "?"})</div>
+          <div><b>${(kbps / 1000).toFixed(1)} Mbit/s</b>all cameras · ${perDay.toFixed(0)} GB/day</div>
+        </div>
+        <div class="bar2"><div style="width:${total ? (100 * (total - free)) / total : 0}%"></div></div>
+      </div>
+      <div class="card"><h3>Cameras</h3><table>
+        <tr><th>Camera</th><th>Bitrate</th><th>Recording</th><th>Motion detection</th><th>Sensitivity</th><th>HomeKit</th></tr>
+        ${cams
+          .map((c) => {
+            const i = c.channel - 1;
+            const mode = this.recordMode(st.record?.[i]);
+            const motion = st.motion?.[i] ?? {};
+            const h = hk.cameras.find((x) => x.entry_id === entryId && x.channel === c.channel);
+            const opt = (v, label) => `<option value="${v}" ${mode === v ? "selected" : ""}>${label}</option>`;
+            return `<tr data-entry="${entryId}" data-ch="${c.channel}">
+              <td>${c.name}</td>
+              <td>${((rates[i] || 0) / 1000).toFixed(1)} Mbit/s<div class="small">${(((rates[i] || 0) * 1000 / 8 * 86400) / 1e9).toFixed(1)} GB/day</div></td>
+              <td><select data-set="record">${mode === "manual" ? opt("manual", "Always (manual)") : ""}${opt("always", "Always")}${opt("motion", "Motion only")}${opt("off", "Off")}</select></td>
+              <td><span class="switch ${motion.Enable ? "on" : ""}" data-set="motion_enabled" role="switch"></span></td>
+              <td><select data-set="motion_level">${[1, 2, 3, 4, 5, 6].map((l) => `<option ${l === motion.Level ? "selected" : ""}>${l}</option>`).join("")}</select></td>
+              <td>${h ? `<span class="switch ${h.enabled ? "on" : ""}" data-hk="${h.key}" role="switch"></span>
+                ${h.enabled ? `<div class="small">${h.paired ? `<span class="ok">Paired</span> · <button class="btn" data-hkreset="${h.key}">Unpair</button>` : `Code <span class="pin">${h.pin}</span>`}</div>` : ""}` : `<span class="muted">—</span>`}</td>
+            </tr>`;
+          })
+          .join("")}
+      </table>
+      <p class="small">Recording and motion detection are written to the NVR. Recording <i>Always</i> keeps everything; <i>Motion only</i> makes the disk last much longer.</p>
+      </div>`;
+    }
+    html += `<div class="card"><h3>HomeKit</h3><div class="small">
+      ${hk.available ? (hk.running ? `<span class="ok">Running</span>` : `<span class="muted">Off</span>`) : `<span class="err">Not available</span>`}
+      ${hk.error ? ` · <span class="err">${hk.error}</span>` : ""}<br>
+      Turn a camera on, then in the Apple Home app choose <b>Add Accessory → More options</b>, pick the camera and enter its code.
+      Video goes straight from the NVR stream (no transcoding), via a dedicated go2rtc on port ${hk.port}.</div></div>`;
+    root.innerHTML = html;
+    const conn = this.hass.connection;
+    const reload = async () => {
+      try {
+        for (const id of Object.keys(this.nvr)) this.nvr[id] = await conn.sendMessagePromise({ type: "xmeye/nvr", entry_id: id });
+      } catch (err) { /* keep old */ }
+      this.renderSettings();
+    };
+    const write = async (tr, field, value) => {
+      try {
+        await conn.sendMessagePromise({
+          type: "xmeye/settings_set", entry_id: tr.dataset.entry, channel: Number(tr.dataset.ch), [field]: value,
+        });
+      } catch (err) {
+        alertBox(root, `Could not change the NVR: ${err.message}`);
+      }
+      reload();
+    };
+    root.querySelectorAll("select[data-set]").forEach((el) =>
+      el.addEventListener("change", () => {
+        const v = el.dataset.set === "motion_level" ? Number(el.value) : el.value;
+        if (el.value !== "manual") write(el.closest("tr"), el.dataset.set, v);
+      })
+    );
+    root.querySelectorAll(".switch[data-set]").forEach((el) =>
+      el.addEventListener("click", () => write(el.closest("tr"), el.dataset.set, !el.classList.contains("on")))
+    );
+    const hkSet = async (msg) => {
+      try {
+        this.homekit = await conn.sendMessagePromise({ type: "xmeye/homekit_set", ...msg });
+      } catch (err) {
+        alertBox(root, `HomeKit: ${err.message}`);
+      }
+      this.renderSettings();
+    };
+    root.querySelectorAll("[data-hk]").forEach((el) =>
+      el.addEventListener("click", () => hkSet({ key: el.dataset.hk, enabled: !el.classList.contains("on") }))
+    );
+    root.querySelectorAll("[data-hkreset]").forEach((el) =>
+      el.addEventListener("click", () => hkSet({ key: el.dataset.hkreset, reset: true }))
+    );
+    clearTimeout(this.hkTimer);
+    if (hk.cameras.some((c) => c.enabled && !c.paired)) {
+      // pick up a new pairing without a manual refresh
+      this.hkTimer = setTimeout(async () => {
+        try {
+          this.homekit = await conn.sendMessagePromise({ type: "xmeye/homekit" });
+        } catch (err) { /* ignore */ }
+        this.renderSettings();
+      }, 5000);
+    }
+  }
+
   // -------------------------------------------------------------- single
 
   async openCamera(index, at = null) {
@@ -530,6 +744,7 @@ class XMeyePanel extends HTMLElement {
               <span class="dot"></span>
               <div><div class="ttl">${cam.name}</div><div class="sub">Live</div></div>
               <div class="spacer"></div>
+              <select class="speed" title="Playback speed">${SPEEDS.map((v) => `<option value="${v}" ${v === this.speed ? "selected" : ""}>${v}×</option>`).join("")}</select>
               <button class="icon prev" title="Previous camera">${icon("prev")}</button>
               <button class="icon next" title="Next camera">${icon("next")}</button>
               <button class="icon mute" title="Sound">${icon(this.muted ? "mute" : "sound")}</button>
@@ -550,7 +765,10 @@ class XMeyePanel extends HTMLElement {
             <div class="ticks"></div>
           </div>
         </div>
-        <aside><div class="head">Events</div><div class="list"></div></aside>
+        <aside>
+          <div class="tabs"><button data-tab="events" class="${this.tab === "events" ? "on" : ""}">Events</button><button data-tab="recordings" class="${this.tab === "recordings" ? "on" : ""}">Recordings</button></div>
+          <div class="list"></div>
+        </aside>
       </div></main>`;
     this.bindHeader(app);
     const $ = (s) => app.querySelector(s);
@@ -583,6 +801,15 @@ class XMeyePanel extends HTMLElement {
     $(".zin").addEventListener("click", () => this.zoom(0.5));
     $(".zout").addEventListener("click", () => this.zoom(2));
     this.bindTrack($(".track"));
+    $(".speed").addEventListener("change", (e) => this.setSpeed(Number(e.target.value)));
+    app.querySelectorAll("[data-tab]").forEach((b) =>
+      b.addEventListener("click", () => {
+        this.tab = b.dataset.tab;
+        app.querySelectorAll("[data-tab]").forEach((x) => x.classList.toggle("on", x === b));
+        this.renderEvents();
+      })
+    );
+    if (this.narrowLayout()) $("main").classList.add("scroll");
   }
 
   setStatus(text, live) {
@@ -642,23 +869,39 @@ class XMeyePanel extends HTMLElement {
     if (next) this.loadDay(next);
   }
 
+  /** Recording blocks of the day: touching files merged, split at full hours. */
+  recordingBlocks() {
+    const blocks = [];
+    for (const r of this.day?.recordings ?? []) {
+      const last = blocks[blocks.length - 1];
+      if (last && secOfDay(r.begin) - secOfDay(last.end) <= 2 && r.begin.slice(0, 13) === last.begin.slice(0, 13)) {
+        last.end = r.end;
+      } else {
+        blocks.push({ begin: r.begin, end: r.end, kind: r.kind });
+      }
+    }
+    return blocks.reverse();
+  }
+
   renderEvents() {
     const list = this.shadowRoot.querySelector(".list");
     if (!list) return;
     const cam = this.cameras[this.current];
-    const events = this.day?.events ?? [];
-    list.innerHTML = events.length
-      ? events
+    const recordings = this.tab === "recordings";
+    const items = recordings ? this.recordingBlocks() : this.day?.events ?? [];
+    list.innerHTML = items.length
+      ? items
           .map(
             (ev, i) => `<div class="item" data-i="${i}">
-              <div class="meta"><div>${this.fmtTime(ev.begin)}</div><div>${dur(ev.begin, ev.end)}</div></div>
+              <div class="meta"><div>${this.fmtTime(ev.begin)}${recordings ? `–${this.fmtTime(ev.end)}` : ""}</div><div>${dur(ev.begin, ev.end)}</div>
+              ${recordings && ev.kind !== "regular" ? `<span class="kind">${ev.kind}</span>` : ""}</div>
               <div class="th"><img alt="" data-thumb="${this.thumbUrl(cam.entry_id, cam.channel, ev.begin)}"></div>
             </div>`
           )
           .join("")
-      : `<div class="empty">No motion on ${dayLabel(this.date)}.</div>`;
+      : `<div class="empty">${recordings ? "No recordings" : "No motion"} on ${dayLabel(this.date)}.</div>`;
     list.querySelectorAll(".item").forEach((el) =>
-      el.addEventListener("click", () => this.play(events[el.dataset.i].begin))
+      el.addEventListener("click", () => this.play(items[el.dataset.i].begin))
     );
     this.lazyThumbs(list);
   }
@@ -763,7 +1006,9 @@ class XMeyePanel extends HTMLElement {
 
   currentStamp() {
     if (this.playing && this.video) {
-      return addSeconds(this.playing.begin, Math.floor(this.video.currentTime || 0));
+      // with server-side speed-up the media time line is compressed
+      const factor = this.playing.speed || 1;
+      return addSeconds(this.playing.begin, Math.floor((this.video.currentTime || 0) * factor));
     }
     if (this.view === "single" && this.date === today()) {
       const d = new Date();
@@ -815,6 +1060,7 @@ class XMeyePanel extends HTMLElement {
         entry_id: cam.entry_id,
         channel: cam.channel,
         time: stamp,
+        speed: this.speed >= SERVER_SPEED ? this.speed : 1,
       });
     } catch (err) {
       this.setMessage(`NVR error: ${err.message}`);
@@ -830,7 +1076,10 @@ class XMeyePanel extends HTMLElement {
     const video = this.video;
     video.srcObject = null;
     video.muted = this.muted;
-    const done = () => this.setMessage("");
+    const done = () => {
+      this.setMessage("");
+      this.applyRate();
+    };
     video.addEventListener("playing", done, { once: true });
     const hls = await attachHls(video, res.url, { startPosition: 0, manifestLoadingTimeOut: 30000 });
     if (token !== this.playToken) {
@@ -844,6 +1093,21 @@ class XMeyePanel extends HTMLElement {
     // keep the zoomed timeline around the playback position
     const s = secOfDay(res.begin);
     if (s < this.tl.start || s > this.tl.start + this.tl.span) this.zoom(1, s);
+  }
+
+  /** Browser rate for what the server does not speed up itself. */
+  applyRate() {
+    if (!this.video || !this.playing) return;
+    this.video.playbackRate = this.speed / (this.playing.speed || 1);
+  }
+
+  setSpeed(speed) {
+    this.speed = speed;
+    if (!this.playing) return;
+    const serverNow = this.playing.speed || 1;
+    const serverWanted = speed >= SERVER_SPEED ? speed : 1;
+    if (serverNow === serverWanted) this.applyRate();
+    else this.play(this.currentStamp());
   }
 
   playNext() {

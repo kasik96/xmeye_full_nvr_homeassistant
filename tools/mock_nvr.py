@@ -29,6 +29,21 @@ class Mock:
         self.video = video
         self.next_session = 0x100
         self.data_conns: dict[int, asyncio.StreamWriter] = {}
+        self.config: dict[str, object] = {}
+
+    async def alarms(self, writer: asyncio.StreamWriter, session: int) -> None:
+        """Motion on channel 9 (index 8): 10 s on, 20 s off."""
+        try:
+            while True:
+                for status in ("Start", "Stop"):
+                    info = {"AlarmInfo": {"Channel": 8, "Event": "VideoMotion", "Status": status,
+                                          "StartTime": f"{datetime.now():%Y-%m-%d %H:%M:%S}"}, "Name": "AlarmInfo"}
+                    body = json.dumps(info).encode() + b"\n\0"
+                    writer.write(HEADER.pack(0xFF, 1, session, 0, 0, 0, 1504, len(body)) + body)
+                    await writer.drain()
+                    await asyncio.sleep(10 if status == "Start" else 20)
+        except (ConnectionError, RuntimeError):
+            pass
 
     def files(self, channel: int, begin: str, end: str) -> list[dict]:
         if channel not in (0, 8):
@@ -74,12 +89,39 @@ class Mock:
                 elif msg == 1006:
                     send(1007, {"Ret": 100, "Name": "KeepAlive"})
                 elif msg == 1020:
-                    send(1021, {"Ret": 100, "Name": "SystemInfo", "SystemInfo": {"SerialNo": "mock0001", "HardWare": "MOCK-NVR"}})
+                    name = body.get("Name")
+                    info = {
+                        "SystemInfo": {"SerialNo": "mock0001", "HardWare": "MOCK-NVR", "SoftWareVersion": "mock"},
+                        "StorageInfo": [{"Partition": [{"TotalSpace": "0x00010000", "RemainSpace": "0x00000000",
+                                                         "OldStartTime": f"{datetime.now() - timedelta(days=2):%Y-%m-%d %H:%M:%S}"}]}],
+                        "WorkState": {"ChannelState": [{"Bitrate": 900 if i in (0, 1, 8) else 0, "Record": i in (0, 1, 8)} for i in range(16)]},
+                    }
+                    send(1021, {"Ret": 100, "Name": name, name: info.get(name)})
+                elif msg == 1040:
+                    name = body.get("Name")
+                    self.config[name] = body.get(name)
+                    send(1041, {"Ret": 100})
+                elif msg == 1500:
+                    asyncio.create_task(self.alarms(writer, session))
+                    send(1501, {"Ret": 100})
                 elif msg == 1048:
                     send(1049, {"Ret": 100, "ChannelTitle": ["Shed", "Front Door"] + [f"D{i}" for i in range(3, 17)]})
                 elif msg == 1042:
-                    st = [{"Status": "Connected" if i in (0, 1, 8) else "NoConfig"} for i in range(16)]
-                    send(1043, {"Ret": 100, "Name": body.get("Name"), body.get("Name"): st})
+                    name = body.get("Name")
+                    if name in self.config:
+                        value = self.config[name]
+                    elif name.startswith("Record.["):
+                        value = {"RecordMode": "ConfigRecord", "Mask": [["0x00000007"] + ["0x0"] * 5] * 7,
+                                 "TimeSection": [["1 00:00:00-24:00:00"] + ["0 00:00:00-24:00:00"] * 5] * 7}
+                    elif name.startswith("Detect.MotionDetect.["):
+                        value = {"Enable": True, "Level": 3}
+                    elif name == "Record":
+                        value = [self.config.get(f"Record.[{i}]") or {"RecordMode": "ConfigRecord", "Mask": [["0x00000007"]]} for i in range(16)]
+                    elif name == "Detect.MotionDetect":
+                        value = [self.config.get(f"Detect.MotionDetect.[{i}]") or {"Enable": True, "Level": 3} for i in range(16)]
+                    else:
+                        value = [{"Status": "Connected" if i in (0, 1, 8) else "NoConfig"} for i in range(16)]
+                    send(1043, {"Ret": 100, "Name": name, name: value})
                 elif msg == 1446:
                     now = datetime.now()
                     mask = (1 << (now.day - 1)) | ((1 << (now.day - 2)) if now.day > 1 else 0)

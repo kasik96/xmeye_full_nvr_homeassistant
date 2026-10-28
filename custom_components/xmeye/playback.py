@@ -39,6 +39,7 @@ from .dvrip import (
     DVRIPError,
     FrameParser,
     Recording,
+    stamp_seconds,
 )
 from .tsmux import TsMuxer
 
@@ -51,6 +52,9 @@ PROBE_VIDEO_FRAMES = 50
 AUDIO_FORMATS = {AUDIO_ALAW: "alaw", AUDIO_ULAW: "mulaw"}
 SILENCE = {"alaw": b"\xd5", "mulaw": b"\xff"}
 SAMPLE_RATE = 8000
+FAST_SPEED = 4
+FPS_WINDOW = 6  # s of time stamps before trusting the measured frame rate
+GAP_SECONDS = 10
 
 
 class PlaybackSession:
@@ -61,8 +65,12 @@ class PlaybackSession:
         rec: Recording,
         ffmpeg: str,
         transcode_h265: bool,
+        speed: int = 1,
     ) -> None:
         self.hass = hass
+        self.speed = speed
+        # ≥ FAST_SPEED: key frames only, no audio, time line compressed by `speed`
+        self._fast = speed >= FAST_SPEED
         self.client = client
         self.rec = rec
         self.token = secrets.token_urlsafe(24)
@@ -80,6 +88,11 @@ class PlaybackSession:
         self._video_frames = 0
         self._audio_samples = 0
         self._padded = 0
+        # Video clock from the I-frames' NVR time stamps (the fps in the header can be off)
+        self._clock = 0.0  # seconds of footage
+        self._fps_est = 25.0
+        self._anchor: tuple[int, int, float] | None = None  # (frame index, stamp s, clock)
+        self._last_stamp = 0
 
     def start(self) -> None:
         self._task = self.hass.async_create_background_task(
@@ -126,19 +139,23 @@ class PlaybackSession:
                         if video_frames < PROBE_VIDEO_FRAMES:
                             continue
                         audio_writer = await self._start_ffmpeg(
-                            fps, video_codec, AUDIO_FORMATS.get(audio_codec)
+                            fps, video_codec, None if self._fast else AUDIO_FORMATS.get(audio_codec)
                         )
                         frames, pending, started = pending, [], True
                     await self._write(frames, audio_writer)
                 if not started and pending:
                     audio_writer = await self._start_ffmpeg(
-                        fps, video_codec, AUDIO_FORMATS.get(audio_codec)
+                        fps, video_codec, None if self._fast else AUDIO_FORMATS.get(audio_codec)
                     )
                     await self._write(pending, audio_writer)
                 _LOGGER.debug(
-                    "%s: %d video frames, %.1f s audio (%.1f s silence added), %d junk bytes",
+                    "%s: %d video frames over %.1f s (%.2f fps, header %d), %.1f s audio "
+                    "(%.1f s silence added), %d junk bytes",
                     self.rec.file_name,
                     self._video_frames,
+                    self._clock,
+                    self._fps_est,
+                    fps,
                     self._audio_samples / SAMPLE_RATE,
                     self._padded / SAMPLE_RATE,
                     parser.skipped,
@@ -160,6 +177,7 @@ class PlaybackSession:
     ) -> asyncio.StreamWriter | None:
         h265 = codec == CODEC_H265
         self._fps = fps
+        self._fps_est = float(fps or 25)
         self._ts = TsMuxer("hevc" if h265 else "h264")
         self._silence = SILENCE.get(audio or "", b"")
         args = [
@@ -226,12 +244,16 @@ class PlaybackSession:
             if frame.kind in FRAME_I or frame.kind == FRAME_P:
                 keyframe = frame.kind in FRAME_I
                 if keyframe:
-                    video.write(self._ts.psi())
-                pts = self._video_frames * 90000 // self._fps
-                video.write(self._ts.video(frame.data, pts, keyframe))
+                    self._sync_clock(frame.stamp)
+                if keyframe or not self._fast:
+                    if keyframe:
+                        video.write(self._ts.psi())
+                    pts = int(self._clock / self.speed * 90000)
+                    video.write(self._ts.video(frame.data, pts, keyframe))
                 self._video_frames += 1
+                self._clock += 1 / self._fps_est
                 if audio_writer:
-                    behind = self._video_frames * SAMPLE_RATE // self._fps - self._audio_samples
+                    behind = int(self._clock * SAMPLE_RATE) - self._audio_samples
                     if behind > SAMPLE_RATE // 4:
                         audio_writer.write(self._silence * behind)
                         self._audio_samples += behind
@@ -243,6 +265,24 @@ class PlaybackSession:
         # Audio is tiny; only wait for it if it piles up, never block video on it.
         if audio_writer and audio_writer.transport.get_write_buffer_size() > 1 << 20:
             await audio_writer.drain()
+
+    def _sync_clock(self, stamp: int) -> None:
+        """Estimate the real frame rate from the I-frames' 1-second time stamps."""
+        seconds = stamp_seconds(stamp)
+        if not seconds:
+            return
+        if self._anchor is None or not 0 <= seconds - self._last_stamp <= GAP_SECONDS:
+            if self._anchor is not None and seconds > self._last_stamp:
+                # recording gap (camera was offline): jump the clock forward
+                self._clock += seconds - self._last_stamp - 1 / self._fps_est
+            # (a clock that went backwards just starts a new measurement)
+            self._anchor = (self._video_frames, seconds, self._clock)
+        else:
+            frames0, seconds0, _ = self._anchor
+            if seconds - seconds0 >= FPS_WINDOW:
+                fps = (self._video_frames - frames0) / (seconds - seconds0)
+                self._fps_est = min(max(fps, self._fps * 0.5, 1.0), self._fps * 1.5 + 1)
+        self._last_stamp = seconds
 
     async def _finish_ffmpeg(self, audio_writer: asyncio.StreamWriter | None) -> None:
         if not self._proc:
@@ -317,16 +357,23 @@ class PlaybackManager:
         self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _on_stop)
 
     async def start(
-        self, client: DVRIPClient, rec: Recording, transcode_h265: bool
+        self, client: DVRIPClient, rec: Recording, transcode_h265: bool, speed: int = 1
     ) -> PlaybackSession:
         for session in self.sessions.values():
-            if session.client is client and session.rec == rec and not session.error:
+            if (
+                session.client is client
+                and session.rec == rec
+                and session.speed == speed
+                and not session.error
+            ):
                 session.touch()
                 return session
         while len(self.sessions) >= MAX_SESSIONS:
             oldest = min(self.sessions.values(), key=lambda s: s.last_access)
             await self._remove(oldest)
-        session = PlaybackSession(self.hass, client, rec, self.ffmpeg, transcode_h265)
+        session = PlaybackSession(
+            self.hass, client, rec, self.ffmpeg, transcode_h265, speed
+        )
         self.sessions[session.token] = session
         session.start()
         if self._reaper is None or self._reaper.done():

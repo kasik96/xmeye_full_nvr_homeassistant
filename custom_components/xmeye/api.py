@@ -18,7 +18,7 @@ from homeassistant.util import dt as dt_util
 from . import XMeyeConfigEntry, as_dict, loaded_entries
 from .const import DOMAIN
 from .dvrip import DVRIPError
-from .playback import PLAYLIST
+from .playback import FAST_SPEED, PLAYLIST
 
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
@@ -33,6 +33,11 @@ def async_setup(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_day)
     websocket_api.async_register_command(hass, ws_events)
     websocket_api.async_register_command(hass, ws_play)
+    websocket_api.async_register_command(hass, ws_nvr)
+    websocket_api.async_register_command(hass, ws_probe)
+    websocket_api.async_register_command(hass, ws_settings_set)
+    websocket_api.async_register_command(hass, ws_homekit)
+    websocket_api.async_register_command(hass, ws_homekit_set)
     hass.http.register_view(ThumbnailView())
 
 
@@ -147,6 +152,7 @@ async def ws_events(
         vol.Required("entry_id"): str,
         vol.Required("channel"): int,
         vol.Required("time"): str,
+        vol.Optional("speed", default=1): vol.In([1, 2, 4, 6, 12, 24]),
     }
 )
 @websocket_api.async_response
@@ -167,8 +173,10 @@ async def ws_play(
         return
     start = max(when, rec.begin)
     part = type(rec)(rec.channel, start, rec.end, rec.file_name, rec.size_kb)
+    # 1-2x: the browser speeds up; faster: key frames only, made by the server
+    speed = msg["speed"] if msg["speed"] >= FAST_SPEED else 1
     session = await hass.data[DOMAIN]["playback"].start(
-        data.client, part, data.transcode_h265
+        data.client, part, data.transcode_h265, speed
     )
     connection.send_result(
         msg["id"],
@@ -177,6 +185,7 @@ async def ws_play(
             "begin": start.strftime(TIME_FORMAT),
             "end": rec.end.strftime(TIME_FORMAT),
             "kind": rec.kind,
+            "speed": speed,
         },
     )
 
@@ -204,3 +213,180 @@ class ThumbnailView(HomeAssistantView):
             content_type="image/jpeg",
             headers={"Cache-Control": "private, max-age=86400"},
         )
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command(
+    {vol.Required("type"): "xmeye/nvr", vol.Required("entry_id"): str}
+)
+@websocket_api.async_response
+async def ws_nvr(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """NVR state for the settings page."""
+    data = _entry(hass, msg["entry_id"]).runtime_data
+    client = data.client
+    out: dict[str, Any] = {}
+    for key, call in (
+        ("system", lambda: client.info("SystemInfo")),
+        ("storage", lambda: client.info("StorageInfo")),
+        ("work", lambda: client.info("WorkState")),
+        ("record", lambda: client.config_get("Record")),
+        ("motion", lambda: client.config_get("Detect.MotionDetect")),
+        ("general", lambda: client.config_get("General.General")),
+        ("titles", client.channel_titles),
+    ):
+        try:
+            out[key] = await call()
+        except DVRIPError as err:
+            out[key] = {"error": str(err)}
+    connection.send_result(msg["id"], out)
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "xmeye/probe",
+        vol.Required("entry_id"): str,
+        vol.Required("channel"): int,
+        vol.Required("time"): str,
+        vol.Optional("action", default="DownloadStart"): str,
+        vol.Optional("control"): dict,
+        vol.Optional("seconds", default=10): int,
+    }
+)
+@websocket_api.async_response
+async def ws_probe(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Diagnostics: read a recording for a while and report its real frame timing."""
+    import asyncio  # noqa: PLC0415
+
+    from .dvrip import FRAME_I, FRAME_P, FrameParser, stamp_seconds  # noqa: PLC0415
+
+    entry = _entry(hass, msg["entry_id"])
+    data = entry.runtime_data
+    when = datetime.strptime(msg["time"], TIME_FORMAT)
+    rec = await data.recording_at(_channel(entry, msg["channel"]), when)
+    if rec is None:
+        connection.send_result(msg["id"], None)
+        return
+    part = type(rec)(rec.channel, max(when, rec.begin), rec.end, rec.file_name, rec.size_kb)
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
+    parser = FrameParser()
+    frames = received = 0
+    first = last = None
+    header_fps = 0
+    async with data.client.download(part, action=msg["action"], then=msg.get("control")) as chunks:
+        async for chunk in chunks:
+            received += len(chunk)
+            for f in parser.feed(chunk):
+                if f.kind in FRAME_I:
+                    s = stamp_seconds(f.stamp)
+                    header_fps = f.fps
+                    if first is None:
+                        first = (frames, s)
+                    last = (frames, s)
+                if f.kind in FRAME_I or f.kind == FRAME_P:
+                    frames += 1
+            if loop.time() - t0 > msg["seconds"]:
+                break
+    wall = loop.time() - t0
+    span = (last[1] - first[1]) if first and last else 0
+    connection.send_result(
+        msg["id"],
+        {
+            "file": rec.file_name,
+            "wall": round(wall, 2),
+            "bytes": received,
+            "frames": frames,
+            "header_fps": header_fps,
+            "stamp_span": span,
+            "measured_fps": round((last[0] - first[0]) / span, 2) if span else None,
+            "speed_vs_wall": round(span / wall, 2) if wall else None,
+        },
+    )
+
+
+
+RECORD_MASKS = {"always": "0x00000007", "motion": "0x00000006"}
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "xmeye/settings_set",
+        vol.Required("entry_id"): str,
+        vol.Required("channel"): int,
+        vol.Optional("record"): vol.In(["always", "motion", "off"]),
+        vol.Optional("motion_enabled"): bool,
+        vol.Optional("motion_level"): vol.All(int, vol.Range(min=1, max=6)),
+    }
+)
+@websocket_api.async_response
+async def ws_settings_set(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Change one channel's recording mode and motion detection on the NVR."""
+    entry = _entry(hass, msg["entry_id"])
+    client = entry.runtime_data.client
+    index = msg["channel"] - 1
+    if not 0 <= index < 64:
+        raise APIError("unknown channel")
+    try:
+        if "record" in msg:
+            name = f"Record.[{index}]"
+            record = await client.config_get(name)
+            if msg["record"] == "off":
+                record["RecordMode"] = "ClosedRecord"
+            else:
+                record["RecordMode"] = "ConfigRecord"
+                for day in record["Mask"]:
+                    day[0] = RECORD_MASKS[msg["record"]]
+                for day in record["TimeSection"]:
+                    day[0] = "1 00:00:00-24:00:00"
+            await client.config_set(name, record)
+        if "motion_enabled" in msg or "motion_level" in msg:
+            name = f"Detect.MotionDetect.[{index}]"
+            motion = await client.config_get(name)
+            if "motion_enabled" in msg:
+                motion["Enable"] = msg["motion_enabled"]
+            if "motion_level" in msg:
+                motion["Level"] = msg["motion_level"]
+            await client.config_set(name, motion)
+    except DVRIPError as err:
+        raise APIError(str(err)) from err
+    connection.send_result(msg["id"], None)
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command({vol.Required("type"): "xmeye/homekit"})
+@callback
+def ws_homekit(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    connection.send_result(msg["id"], hass.data[DOMAIN]["homekit"].status())
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "xmeye/homekit_set",
+        vol.Required("key"): str,
+        vol.Optional("enabled"): bool,
+        vol.Optional("reset"): bool,
+    }
+)
+@websocket_api.async_response
+async def ws_homekit_set(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    manager = hass.data[DOMAIN]["homekit"]
+    if msg["key"] not in manager.cameras:
+        raise APIError("unknown camera")
+    if msg.get("reset"):
+        await manager.reset_pairing(msg["key"])
+    if "enabled" in msg:
+        await manager.set_enabled(msg["key"], msg["enabled"])
+    connection.send_result(msg["id"], manager.status())

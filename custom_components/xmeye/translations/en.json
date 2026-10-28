@@ -2,7 +2,7 @@
   "config": {
     "step": {
       "user": {
-        "title": "XMeye NVR",
+        "title": "XMeye Full NVR",
         "description": "Connection to the NVR: DVRIP port (used by the XMeye app) for recordings, RTSP port for live video.",
         "data": {
           "host": "Host",
@@ -31,7 +31,7 @@
   "options": {
     "step": {
       "init": {
-        "title": "XMeye options",
+        "title": "XMeye Full NVR options",
         "data": {
           "channel_1": "Channel 1",
           "channel_2": "Channel 2",
@@ -52,6 +52,16 @@
           "transcode_h265": "Transcode H.265 recordings to H.264 (for browsers without H.265)"
         },
         "description": "Camera names. Leave a name empty to hide that channel."
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "motion": {
+        "name": "Motion"
+      },
+      "person": {
+        "name": "Person"
       }
     }
   }

@@ -35,15 +35,18 @@ from .const import (
     DEFAULT_TRANSCODE_H265,
     DOMAIN,
     EVENT_MERGE_GAP,
+    MOTION_FILE_MAX,
 )
+from .alarm import AlarmListener
 from .dvrip import DVRIPAuthError, DVRIPClient, DVRIPError, Recording
 from .go2rtc import Go2rtc
+from .homekit import HomeKitManager
 from .playback import PlaybackManager, PlaybackView
 from .thumbnails import ThumbnailCache
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = [Platform.CAMERA]
+PLATFORMS = [Platform.BINARY_SENSOR, Platform.CAMERA]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
@@ -72,6 +75,7 @@ class XMeyeData:
     nvr_channels: dict[int, str]
     transcode_h265: bool
     go2rtc: Go2rtc | None = None
+    alarms: AlarmListener = None  # type: ignore[assignment]
     _cache: dict[tuple[int, date], tuple[float, list[Recording]]] = field(
         default_factory=dict
     )
@@ -109,14 +113,32 @@ class XMeyeData:
             return recs
 
     async def events(self, channel: int, day: date) -> list[Event]:
-        events: list[Event] = []
+        """Motion periods of a day.
+
+        Exact times come from the live alarm stream (since the integration
+        started listening). Before that, and as a fallback, short files the NVR
+        tagged as motion; long [M] files (continuous recording with motion
+        somewhere in it) say nothing about when it happened.
+        """
+        day_begin = datetime.combine(day, time.min)
+        day_end = datetime.combine(day, time.max)
+        periods = [
+            (b, e) for b, e, kind in self.alarms.periods(channel, day_begin, day_end)
+        ]
+        live_since = self.alarms.history_start or datetime.max
         for rec in await self.recordings(channel, day):
-            if rec.kind not in ("motion", "alarm"):
-                continue
-            if events and rec.begin - events[-1].end <= EVENT_MERGE_GAP:
-                events[-1].end = max(events[-1].end, rec.end)
+            if (
+                rec.kind in ("motion", "alarm")
+                and rec.duration <= MOTION_FILE_MAX
+                and rec.begin < live_since
+            ):
+                periods.append((rec.begin, rec.end))
+        events: list[Event] = []
+        for begin, end in sorted(periods):
+            if events and begin - events[-1].end <= EVENT_MERGE_GAP:
+                events[-1].end = max(events[-1].end, end)
             else:
-                events.append(Event(channel, rec.begin, rec.end))
+                events.append(Event(channel, begin, end))
         return events
 
     async def recording_at(self, channel: int, when: datetime) -> Recording | None:
@@ -158,7 +180,13 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     ffmpeg = get_ffmpeg_manager(hass).binary
     manager = PlaybackManager(hass, ffmpeg)
     await manager.async_setup()
-    hass.data[DOMAIN] = {"playback": manager, "thumbs": ThumbnailCache(hass, ffmpeg)}
+    homekit = HomeKitManager(hass)
+    await homekit.async_setup()
+    hass.data[DOMAIN] = {
+        "playback": manager,
+        "thumbs": ThumbnailCache(hass, ffmpeg),
+        "homekit": homekit,
+    }
     hass.http.register_view(PlaybackView(manager))
 
     from . import api, panel  # noqa: PLC0415
@@ -234,6 +262,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: XMeyeConfigEntry) -> boo
         if not await data.go2rtc.add_streams(streams):
             data.go2rtc = None
 
+    homekit: HomeKitManager = hass.data[DOMAIN]["homekit"]
+    for ch, name in channels.items():
+        source = (
+            data.go2rtc.rtsp_url(data.stream_name(ch, False))
+            if data.go2rtc
+            else data.rtsp_url(ch, False)
+        )
+        await homekit.register(entry.entry_id, data.serial, ch, name, source)
+    await homekit.apply()
+
+    data.alarms = AlarmListener(hass, client, entry.entry_id)
+    await data.alarms.async_start()
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     return True
@@ -247,6 +288,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: XMeyeConfigEntry) -> bo
     if not await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         return False
     data = entry.runtime_data
+    await data.alarms.async_stop()
     await hass.data[DOMAIN]["playback"].close_client(data.client)
     await data.client.close()
     return True

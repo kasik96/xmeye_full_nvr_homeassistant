@@ -1,4 +1,4 @@
-"""Config flow for XMeye NVR."""
+"""Config flow for XMeye Full NVR."""
 
 from __future__ import annotations
 
