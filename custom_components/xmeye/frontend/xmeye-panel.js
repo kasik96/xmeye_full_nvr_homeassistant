@@ -23,7 +23,18 @@ header .logo { width:30px; height:30px; border-radius:8px; margin-left:4px; }
 .icon svg { width:22px; height:22px; fill:currentColor; }
 .spacer { flex:1; }
 .seg { display:flex; background:#1a1c20; border-radius:20px; padding:3px; }
-.seg button { padding:6px 14px; border-radius:16px; font-size:13px; color:#aab; }
+.seg button { padding:6px 14px; border-radius:16px; font-size:13px; color:#aab; white-space:nowrap; }
+@media (max-width: 600px) {
+  header { gap:4px; padding:0 6px; }
+  header h1 { display:none; }
+  .seg button { padding:6px 11px; }
+  h2 { font-size:17px; margin:12px 12px 6px; }
+  .strip { padding:0 12px 6px; min-height:112px; }
+  .ev, .ev .th { width:120px; } .ev .th { height:84px; }
+  .gridwrap { padding:0 12px 12px; }
+  .left { padding:8px; }
+  .bar .icon.prev, .bar .icon.next { display:none; }
+}
 .seg button.on { background:#2d6cdf; color:#fff; }
 main { flex:1; min-height:0; overflow:hidden; container-type:size; }
 main.scroll { overflow:auto; container-type:inline-size; }
@@ -108,8 +119,23 @@ td select { background:#1f2226; color:#e8e8ea; border:0; border-radius:6px; padd
 .switch { position:relative; width:38px; height:22px; border-radius:11px; background:#3a3f47; flex:none; display:inline-block; vertical-align:middle; }
 .switch::after { content:""; position:absolute; top:3px; left:3px; width:16px; height:16px; border-radius:50%; background:#fff; transition:left .15s; }
 .switch.on { background:#2d6cdf; } .switch.on::after { left:19px; }
-.live { position:absolute; right:12px; top:12px; background:#fff; color:#d33; border-radius:20px;
-  padding:8px 16px; font-weight:500; box-shadow:0 2px 8px #0008; }
+@container (max-width: 760px) {
+  .settings { padding:4px 10px 24px; }
+  table, tbody, tr, td { display:block; width:100%; }
+  tr.head { display:none; }
+  tr.cam { background:#1b1e22; border-radius:10px; margin:10px 0; padding:4px 12px; }
+  td { border:0; padding:8px 0; display:flex; align-items:center; justify-content:space-between; gap:12px; }
+  td.name { font-size:16px; font-weight:500; border-bottom:1px solid #2a2e34; }
+  td[data-label]::before { content:attr(data-label); color:#8a93a3; }
+  td.hk { flex-wrap:wrap; }
+  .stats { gap:14px; } .stats b { font-size:17px; }
+}
+.live { position:absolute; right:12px; top:12px; background:#000a; color:#fff; border:1px solid #fff6;
+  border-radius:18px; padding:6px 14px 6px 10px; font-size:13px; display:flex; align-items:center; gap:6px; }
+.live:hover { background:#000d; border-color:#fff; }
+.live svg { width:16px; height:16px; fill:currentColor; }
+.badge { position:absolute; left:12px; top:12px; background:#f59e0b; color:#111; font-size:11px; font-weight:600;
+  letter-spacing:1px; padding:3px 8px; border-radius:6px; }
 .live.hidden { display:none; }
 @container (max-width: 820px) {
   .single { flex-direction:column; height:auto; }
@@ -132,6 +158,7 @@ const ICONS = {
   next: "M8.59,16.58L13.17,12L8.59,7.41L10,6L16,12L10,18L8.59,16.58Z",
   zoomin: "M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z",
   zoomout: "M19,13H5V11H19V13Z",
+  back: "M12,2A10,10 0 1,0 22,12A10,10 0 0,0 12,2M12,20A8,8 0 1,1 20,12A8,8 0 0,1 12,20M12,7A5,5 0 1,0 17,12A5,5 0 0,0 12,7Z",
 };
 const icon = (name) =>
   `<svg viewBox="0 0 24 24"><path d="${ICONS[name]}"/></svg>`;
@@ -283,6 +310,15 @@ function loadHls(url) {
 }
 
 let hlsUrl = "/xmeye_static/hls.light.min.js";
+
+/** H.265 in fMP4 (MSE) or native HLS: then recordings are not transcoded. */
+function canPlayHevc() {
+  const type = 'video/mp4; codecs="hvc1.1.6.L153.B0"';
+  try {
+    if (window.MediaSource?.isTypeSupported(type)) return true;
+  } catch (err) { /* old browser */ }
+  return document.createElement("video").canPlayType(type) === "probably";
+}
 let logoUrl = "/xmeye_static/logo.png";
 
 /** Play an HLS URL in a <video>; returns the hls.js instance (or null). */
@@ -627,7 +663,7 @@ class XMeyePanel extends HTMLElement {
         <div class="bar2"><div style="width:${total ? (100 * (total - free)) / total : 0}%"></div></div>
       </div>
       <div class="card"><h3>Cameras</h3><table>
-        <tr><th>Camera</th><th>Bitrate</th><th>Recording</th><th>Motion detection</th><th>Sensitivity</th><th>HomeKit</th></tr>
+        <tr class="head"><th>Camera</th><th>Bitrate</th><th>Recording</th><th>Motion detection</th><th>Sensitivity</th><th>HomeKit</th></tr>
         ${cams
           .map((c) => {
             const i = c.channel - 1;
@@ -635,13 +671,13 @@ class XMeyePanel extends HTMLElement {
             const motion = st.motion?.[i] ?? {};
             const h = hk.cameras.find((x) => x.entry_id === entryId && x.channel === c.channel);
             const opt = (v, label) => `<option value="${v}" ${mode === v ? "selected" : ""}>${label}</option>`;
-            return `<tr data-entry="${entryId}" data-ch="${c.channel}">
-              <td>${c.name}</td>
-              <td>${((rates[i] || 0) / 1000).toFixed(1)} Mbit/s<div class="small">${(((rates[i] || 0) * 1000 / 8 * 86400) / 1e9).toFixed(1)} GB/day</div></td>
-              <td><select data-set="record">${mode === "manual" ? opt("manual", "Always (manual)") : ""}${opt("always", "Always")}${opt("motion", "Motion only")}${opt("off", "Off")}</select></td>
-              <td><span class="switch ${motion.Enable ? "on" : ""}" data-set="motion_enabled" role="switch"></span></td>
-              <td><select data-set="motion_level">${[1, 2, 3, 4, 5, 6].map((l) => `<option ${l === motion.Level ? "selected" : ""}>${l}</option>`).join("")}</select></td>
-              <td>${h ? `<span class="switch ${h.enabled ? "on" : ""}" data-hk="${h.key}" role="switch"></span>
+            return `<tr class="cam" data-entry="${entryId}" data-ch="${c.channel}">
+              <td class="name">${c.name}</td>
+              <td data-label="Bitrate"><span>${((rates[i] || 0) / 1000).toFixed(1)} Mbit/s <span class="small">· ${(((rates[i] || 0) * 1000 / 8 * 86400) / 1e9).toFixed(1)} GB/day</span></span></td>
+              <td data-label="Recording"><select data-set="record">${mode === "manual" ? opt("manual", "Always (manual)") : ""}${opt("always", "Always")}${opt("motion", "Motion only")}${opt("off", "Off")}</select></td>
+              <td data-label="Motion detection"><span class="switch ${motion.Enable ? "on" : ""}" data-set="motion_enabled" role="switch"></span></td>
+              <td data-label="Sensitivity"><select data-set="motion_level">${[1, 2, 3, 4, 5, 6].map((l) => `<option ${l === motion.Level ? "selected" : ""}>${l}</option>`).join("")}</select></td>
+              <td class="hk" data-label="HomeKit">${h ? `<span class="switch ${h.enabled ? "on" : ""}" data-hk="${h.key}" role="switch"></span>
                 ${h.enabled ? `<div class="small">${h.paired ? `<span class="ok">Paired</span> · <button class="btn" data-hkreset="${h.key}">Unpair</button>` : `Code <span class="pin">${h.pin}</span>`}</div>` : ""}` : `<span class="muted">—</span>`}</td>
             </tr>`;
           })
@@ -750,7 +786,8 @@ class XMeyePanel extends HTMLElement {
               <button class="icon mute" title="Sound">${icon(this.muted ? "mute" : "sound")}</button>
               <button class="icon full" title="Fullscreen">${icon("full")}</button>
             </div>
-            <button class="live hidden">● Live</button>
+            <span class="badge" hidden>PLAYBACK</span>
+            <button class="live hidden" title="Stop playback and go back to the live view">${icon("back")}Back to live</button>
           </div>
           <div class="tl">
             <div class="tlhead">
@@ -817,6 +854,8 @@ class XMeyePanel extends HTMLElement {
     if (sub) sub.textContent = text;
     this.shadowRoot.querySelector(".bar .dot")?.classList.toggle("off", !live);
     this.shadowRoot.querySelector(".live")?.classList.toggle("hidden", !!live);
+    const badge = this.shadowRoot.querySelector(".badge");
+    if (badge) badge.hidden = !!live;
   }
 
   setMessage(text) {
@@ -1061,6 +1100,7 @@ class XMeyePanel extends HTMLElement {
         channel: cam.channel,
         time: stamp,
         speed: this.speed >= SERVER_SPEED ? this.speed : 1,
+        hevc: canPlayHevc(),
       });
     } catch (err) {
       this.setMessage(`NVR error: ${err.message}`);
@@ -1129,4 +1169,4 @@ class XMeyePanel extends HTMLElement {
   }
 }
 
-customElements.define("xmeye-panel", XMeyePanel);
+if (!customElements.get("xmeye-panel")) customElements.define("xmeye-panel", XMeyePanel);

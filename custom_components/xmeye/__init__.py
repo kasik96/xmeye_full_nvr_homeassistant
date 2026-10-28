@@ -180,7 +180,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     ffmpeg = get_ffmpeg_manager(hass).binary
     manager = PlaybackManager(hass, ffmpeg)
     await manager.async_setup()
-    homekit = HomeKitManager(hass)
+    homekit = HomeKitManager(hass, ffmpeg)
     await homekit.async_setup()
     hass.data[DOMAIN] = {
         "playback": manager,

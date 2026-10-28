@@ -23,7 +23,7 @@
 
   | Start | Header | Fields |
   |---|---|---|
-  | `00 00 01 FC` / `FE` | 16 | I-frame: [4] low nibble codec (2 H.264, 3 H.265), [5] fps, [6]/[7] size / 8, [8..11] packed date, [12..15] length |
+  | `00 00 01 FC` / `FE` | 16 | I-frame: [4] low nibble codec (2 H.264, 3 H.265 — both verified), [5] fps, [6]/[7] size / 8, [8..11] packed date, [12..15] length |
   | `00 00 01 FD` | 8 | P-frame: [4..7] length |
   | `00 00 01 FA` | 8 | Audio: [4] codec (0x0E A-law, 0x0A µ-law), [6..7] length |
   | `00 00 01 F9` | 8 | Info: [6..7] length |
@@ -72,6 +72,13 @@ SRTP is on `:51831` (HA's go2rtc has 8443). Streams are `hk_<serial>_<ch>` point
 the pairings back into that file; the integration keeps them when it rewrites it. Per-camera on/off and PIN live in
 `.storage/xmeye.homekit`. go2rtc's mDNS only answers queries (no announcements).
 
+Each HomeKit stream has `[rtsp restream, ffmpeg:<name>#video=h264, ffmpeg:<name>#audio=opus]`: go2rtc takes the
+first source whose codecs HomeKit accepts, so H.264 is passed through and H.265 is transcoded on demand (`exec`
+allowed for `ffmpeg` only). go2rtc patches pairings into its YAML in place and breaks on PyYAML's default style
+(lists at the key's indent, long lines wrapped), so the file is written with indented lists and no wrapping, and
+only rewritten (and go2rtc restarted) when it changes. Without a system go2rtc, the pinned 1.9.14 release is
+downloaded and checked against SHA-256 (amd64, arm64, arm).
+
 ## Panel API
 
 | WebSocket | Returns |
@@ -79,7 +86,7 @@ the pairings back into that file; the integration keeps them when it rewrites it
 | `xmeye/cameras` | cameras with `entry_id`, `channel`, `name`, `entity_id`, `sub_entity_id` |
 | `xmeye/day {entry_id, channel, date?}` | `recordings`, `events` (merged motion), `days` with footage |
 | `xmeye/events {hours, limit}` | recent events of all cameras |
-| `xmeye/play {entry_id, channel, time, speed}` | HLS `url`, `begin`, `end`, `speed` the server applied (1 or ≥ 4) |
+| `xmeye/play {entry_id, channel, time, speed, hevc}` (`hevc`: the browser decodes H.265, so no transcoding) | HLS `url`, `begin`, `end`, `speed` the server applied (1 or ≥ 4) |
 | `xmeye/nvr {entry_id}` (admin) | system, storage, work state, record and motion config, titles |
 | `xmeye/settings_set {entry_id, channel, record?, motion_enabled?, motion_level?}` (admin) | writes to the NVR |
 | `xmeye/homekit`, `xmeye/homekit_set {key, enabled?, reset?}` (admin) | HomeKit status / switch / unpair |

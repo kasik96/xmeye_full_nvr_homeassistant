@@ -77,6 +77,7 @@ class PlaybackSession:
         self.dir = Path(tempfile.mkdtemp(prefix=TEMP_PREFIX))
         self._ffmpeg = ffmpeg
         self._transcode_h265 = transcode_h265
+        self.transcode_h265 = transcode_h265
         self._proc: asyncio.subprocess.Process | None = None
         self._task: asyncio.Task | None = None
         self.finished = asyncio.Event()
@@ -364,6 +365,7 @@ class PlaybackManager:
                 session.client is client
                 and session.rec == rec
                 and session.speed == speed
+                and session.transcode_h265 == transcode_h265
                 and not session.error
             ):
                 session.touch()

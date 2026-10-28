@@ -153,6 +153,8 @@ async def ws_events(
         vol.Required("channel"): int,
         vol.Required("time"): str,
         vol.Optional("speed", default=1): vol.In([1, 2, 4, 6, 12, 24]),
+        # the browser can decode H.265 (Safari, Chrome with hardware decoding)
+        vol.Optional("hevc", default=False): bool,
     }
 )
 @websocket_api.async_response
@@ -175,8 +177,9 @@ async def ws_play(
     part = type(rec)(rec.channel, start, rec.end, rec.file_name, rec.size_kb)
     # 1-2x: the browser speeds up; faster: key frames only, made by the server
     speed = msg["speed"] if msg["speed"] >= FAST_SPEED else 1
+    transcode = data.transcode_h265 and not msg["hevc"]
     session = await hass.data[DOMAIN]["playback"].start(
-        data.client, part, data.transcode_h265, speed
+        data.client, part, transcode, speed
     )
     connection.send_result(
         msg["id"],
@@ -278,6 +281,7 @@ async def ws_probe(
     frames = received = 0
     first = last = None
     header_fps = 0
+    codec = None
     async with data.client.download(part, action=msg["action"], then=msg.get("control")) as chunks:
         async for chunk in chunks:
             received += len(chunk)
@@ -285,6 +289,7 @@ async def ws_probe(
                 if f.kind in FRAME_I:
                     s = stamp_seconds(f.stamp)
                     header_fps = f.fps
+                    codec = f.codec
                     if first is None:
                         first = (frames, s)
                     last = (frames, s)
@@ -302,6 +307,7 @@ async def ws_probe(
             "bytes": received,
             "frames": frames,
             "header_fps": header_fps,
+            "codec": {2: "h264", 3: "h265"}.get(codec, codec),
             "stamp_span": span,
             "measured_fps": round((last[0] - first[0]) / span, 2) if span else None,
             "speed_vs_wall": round(span / wall, 2) if wall else None,

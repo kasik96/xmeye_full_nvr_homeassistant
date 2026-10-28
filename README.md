@@ -17,7 +17,7 @@ One integration for a Xiongmai / XMeye NVR:
 
 Talks the NVR's own DVRIP protocol (port 34567, what the XMeye app uses) for recordings
 and its RTSP server (port 554) for live video. Tested on an NBD88X16S-KL-V3 NVR,
-firmware V4.03.R11, with H.264 cameras, on Home Assistant 2026.10.
+firmware V4.03.R11, with H.264 and H.265 cameras, on Home Assistant OS 2026.10.
 
 ## The panel (sidebar → XMeye Full NVR)
 
@@ -56,24 +56,38 @@ channel), and whether H.265 recordings are transcoded to H.264 for playback.
 ## HomeKit
 
 Home Assistant's own go2rtc runs without its HomeKit module, so the integration starts a
-second go2rtc (the binary that ships with Home Assistant OS and the container) just for
-HomeKit. It listens on port 51830 (HomeKit) and 51831 (SRTP video). Only the HomeKit
+second go2rtc just for HomeKit. Nothing has to be installed. It uses the go2rtc that comes
+with Home Assistant OS and the container image. On other installs it downloads the pinned
+go2rtc 1.9.14 release from GitHub once (checked by SHA-256) into `.storage`. It listens on port 51830 (HomeKit) and 51831 (SRTP video). Only the HomeKit
 pairing endpoints are reachable from the network; go2rtc's API and streams are not. It
-reads the main streams from HA's go2rtc RTSP restream, so video is not transcoded and
-the NVR still sees one connection per stream.
+reads the main streams from HA's go2rtc RTSP restream, so H.264 video is passed through and
+the NVR still sees one connection per stream. HomeKit only takes H.264. For H.265 cameras
+go2rtc converts the video with ffmpeg while someone watches in the Home app. Sound is
+converted to Opus.
 
 1. Panel → **Settings** → turn **HomeKit** on for a camera.
 2. Apple Home → **Add Accessory → More options**, pick the camera and enter the code
    shown in the panel.
 
-The panel shows when a camera is paired and can unpair it (a new code is created).
-Without go2rtc in the system, use Home Assistant's HomeKit Bridge on the camera entities instead.
+The panel shows when a camera is paired and can unpair it (a new code is created). Turn a
+camera off and on only when needed: go2rtc restarts on every change, which interrupts
+pairing in progress.
 
 ## Recording time and disk
 
 The panel's settings show how many days the disk holds. That figure is disk size ÷
 (sum of the cameras' bitrates). *Motion only* recording for quiet cameras, or a lower
 bitrate in a camera's own settings, makes it last longer.
+
+## H.265 cameras
+
+* **Recordings:** browsers that decode H.265 (Safari, Chrome/Edge with hardware decoding)
+  get the video unchanged. For others the integration converts it to H.264 (libx264, about
+  3× real time at 2560×1440 on an x86 Home Assistant box). Turn that off in the integration
+  options if no browser of yours needs it.
+* **Live:** WebRTC in the browser carries H.265 only where the browser supports it (Safari,
+  recent Chrome with hardware decoding). The grid uses the sub stream, which is often H.264.
+* **HomeKit:** converted to H.264, see above.
 
 ## How playback works
 

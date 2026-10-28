@@ -11,7 +11,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import logging
+import os
+import platform
 import secrets
 import shutil
 from pathlib import Path
@@ -21,6 +24,7 @@ import yaml
 
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import Event, HomeAssistant
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
 
 _LOGGER = logging.getLogger(__name__)
@@ -30,8 +34,34 @@ SRTP_PORT = 51831
 RESPAWN = 10
 # HAP endpoints; everything else of go2rtc's API stays closed on the LAN
 HAP_PATHS = ["/pair-setup", "/pair-verify", "/pairings", "/accessories", "/characteristics"]
+# Used when the system has no go2rtc (e.g. Home Assistant Core in a venv):
+# a pinned release from GitHub, checked against these hashes.
+GO2RTC_VERSION = "1.9.14"
+GO2RTC_URL = "https://github.com/AlexxIT/go2rtc/releases/download/v{version}/go2rtc_linux_{arch}"
+GO2RTC_SHA256 = {
+    "amd64": "32d616af226bd731678ffde328b94cfb94e30339bfefc469cfb76323144615a6",
+    "arm64": "359fabade8a7a51e81a55fe6df6b0ef81764a5e1d63179577534eaaa71904b50",
+    "arm": "4d7e1639af5a2722a28e864468fd8099b3c1682565446c798bf9e3b38fde12e4",
+}
+ARCHES = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64",
+          "armv7l": "arm", "armv6l": "arm"}
 # Trivial codes Apple rejects
 BAD_PINS = {f"{d}" * 8 for d in range(10)} | {"12345678", "87654321"}
+
+
+class _Dumper(yaml.SafeDumper):
+    """YAML the way go2rtc writes it: indented lists, no line wrapping.
+
+    go2rtc patches pairings into this file in place; with PyYAML's default
+    (lists at the key's indent, long keys wrapped) its patch breaks the file.
+    """
+
+    def increase_indent(self, flow: bool = False, indentless: bool = False) -> None:
+        return super().increase_indent(flow, False)
+
+
+def _dump(data: dict) -> str:
+    return yaml.dump(data, Dumper=_Dumper, sort_keys=False, width=1 << 20, indent=2)
 
 
 def _new_pin() -> str:
@@ -48,8 +78,9 @@ def format_pin(pin: str) -> str:
 class HomeKitManager:
     """Owns the HomeKit go2rtc process for all NVRs."""
 
-    def __init__(self, hass: HomeAssistant) -> None:
+    def __init__(self, hass: HomeAssistant, ffmpeg: str) -> None:
         self.hass = hass
+        self._ffmpeg = ffmpeg
         self._store: Store[dict] = Store(hass, 1, "xmeye.homekit")
         # stream name -> {"enabled", "pin", "name", "source", "entry_id", "channel"}
         self.cameras: dict[str, dict[str, Any]] = {}
@@ -64,6 +95,10 @@ class HomeKitManager:
         stored = await self._store.async_load() or {}
         self.cameras = stored.get("cameras", {})
         self._binary = await self.hass.async_add_executor_job(shutil.which, "go2rtc")
+        if not self._binary:
+            cached = Path(self.hass.config.path(".storage", f"xmeye_go2rtc_{GO2RTC_VERSION}"))
+            if await self.hass.async_add_executor_job(cached.is_file):
+                self._binary = str(cached)
 
         async def _stop(_event: Event) -> None:
             await self._stop_process()
@@ -83,18 +118,27 @@ class HomeKitManager:
         cam.update(entry_id=entry_id, channel=channel + 1, name=name, source=source)
 
     async def apply(self) -> None:
-        """Write the config and (re)start go2rtc for the enabled cameras."""
+        """Write the config and (re)start go2rtc for the enabled cameras.
+
+        go2rtc is only restarted when its config changes: a restart drops
+        running HomeKit sessions and any pairing in progress.
+        """
         async with self._lock:
             await self._store.async_save({"cameras": self.cameras})
             enabled = {k: c for k, c in self.cameras.items() if c["enabled"] and c.get("source")}
-            await self._stop_process()
             if not enabled:
+                await self._stop_process()
                 return
             if not self._binary:
-                self.error = "go2rtc binary not found (needs Home Assistant OS or the container image)"
+                self._binary = await self._download()
+            if not self._binary:
                 _LOGGER.warning(self.error)
                 return
-            await self.hass.async_add_executor_job(self._write_config, enabled)
+            changed = await self.hass.async_add_executor_job(self._write_config, enabled)
+            running = self._proc is not None and self._proc.returncode is None
+            if running and not changed:
+                return
+            await self._stop_process()
             self.error = None
             self._runner = self.hass.async_create_background_task(
                 self._run(), "xmeye homekit go2rtc"
@@ -110,10 +154,39 @@ class HomeKitManager:
         await self.hass.async_add_executor_job(self._drop_pairings, key)
         await self.apply()
 
+    async def _download(self) -> str | None:
+        """Fetch the pinned go2rtc release for this machine (systems without one)."""
+        arch = ARCHES.get(platform.machine().lower())
+        if platform.system() != "Linux" or arch not in GO2RTC_SHA256:
+            self.error = f"no go2rtc for {platform.system()} {platform.machine()}"
+            return None
+        target = Path(self.hass.config.path(".storage", f"xmeye_go2rtc_{GO2RTC_VERSION}"))
+        url = GO2RTC_URL.format(version=GO2RTC_VERSION, arch=arch)
+        _LOGGER.info("Downloading go2rtc %s for HomeKit from %s", GO2RTC_VERSION, url)
+        try:
+            async with async_get_clientsession(self.hass).get(url, timeout=120) as resp:
+                resp.raise_for_status()
+                data = await resp.read()
+        except Exception as err:  # noqa: BLE001
+            self.error = f"could not download go2rtc: {err}"
+            return None
+        if hashlib.sha256(data).hexdigest() != GO2RTC_SHA256[arch]:
+            self.error = "downloaded go2rtc has the wrong checksum"
+            return None
+
+        def _save() -> None:
+            tmp = target.with_suffix(".tmp")
+            tmp.write_bytes(data)
+            os.chmod(tmp, 0o755)
+            tmp.replace(target)
+
+        await self.hass.async_add_executor_job(_save)
+        return str(target)
+
     def status(self) -> dict[str, Any]:
         paired = self._read_pairings()
         return {
-            "available": bool(self._binary),
+            "available": bool(self._binary) or platform.system() == "Linux",
             "running": self._proc is not None and self._proc.returncode is None,
             "error": self.error,
             "port": HOMEKIT_PORT,
@@ -148,9 +221,10 @@ class HomeKitManager:
         config = self._load()
         with contextlib.suppress(KeyError, TypeError):
             config["homekit"][key].pop("pairings", None)
-            self._config.write_text(yaml.safe_dump(config, sort_keys=False))
+            self._config.write_text(_dump(config))
 
-    def _write_config(self, enabled: dict[str, dict[str, Any]]) -> None:
+    def _write_config(self, enabled: dict[str, dict[str, Any]]) -> bool:
+        """Returns whether the file changed."""
         old = self._load().get("homekit") or {}
         homekit = {}
         for key, cam in enabled.items():
@@ -161,20 +235,35 @@ class HomeKitManager:
                     item[field] = old[key][field]
             homekit[key] = item
         config = {
-            "app": {"modules": ["api", "homekit", "rtsp", "srtp"]},
+            "app": {"modules": ["api", "homekit", "rtsp", "srtp", "ffmpeg", "exec"]},
             "api": {"listen": f":{HOMEKIT_PORT}", "allow_paths": HAP_PATHS},
+            # ffmpeg only runs when HomeKit needs it: H.265 cameras (HomeKit takes H.264
+            # only) and audio (Opus); H.264 video is passed through untouched
+            "exec": {"allow_paths": [self._ffmpeg]},
+            "ffmpeg": {"bin": self._ffmpeg},
             "rtsp": {"listen": ""},
             # HA's own go2rtc has SRTP on the default 8443
             "srtp": {"listen": f":{SRTP_PORT}"},
             "log": {"level": "info"},
-            "streams": {key: cam["source"] for key, cam in enabled.items()},
+            "streams": {
+                key: [
+                    cam["source"],
+                    f"ffmpeg:{key}#video=h264",
+                    f"ffmpeg:{key}#audio=opus",
+                ]
+                for key, cam in enabled.items()
+            },
             "homekit": homekit,
         }
+        text = "# Managed by the XMeye Full NVR integration\n" + _dump(config)
+        try:
+            if self._config.read_text() == text:
+                return False
+        except OSError:
+            pass
         self._config.parent.mkdir(parents=True, exist_ok=True)
-        self._config.write_text(
-            "# Managed by the XMeye Full NVR integration\n"
-            + yaml.safe_dump(config, sort_keys=False)
-        )
+        self._config.write_text(text)
+        return True
 
     # --- process ----------------------------------------------------------
 
