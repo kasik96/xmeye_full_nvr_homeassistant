@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XMeye Full NVR</title>
+<link rel="icon" href="/panel/logo.png">
+<link rel="stylesheet" href="/app/app.css">
+</head>
+<body>
+<form class="card login" method="post" action="/login">
+  <div class="status" style="margin-bottom:14px"><img src="/panel/logo.png" width="34" height="34" style="border-radius:8px" alt=""><h2 style="margin:0">XMeye Full NVR</h2></div>
+  <label>Web password<input type="password" name="password" autofocus autocomplete="current-password"></label>
+  <p class="msg err" id="wrong" hidden>Wrong password.</p>
+  <div class="row"><button class="primary" type="submit">Log in</button></div>
+</form>
+<script>if (location.search.includes("wrong")) document.getElementById("wrong").hidden = false;</script>
+</body>
+</html>

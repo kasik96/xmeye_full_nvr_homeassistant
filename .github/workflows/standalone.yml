@@ -1,0 +1,62 @@
+name: Standalone app
+
+on:
+  release:
+    types: [published]
+  push:
+    paths:
+      - "standalone/**"
+      - "custom_components/xmeye/**"
+      - ".github/workflows/standalone.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, macos-15-intel, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r standalone/requirements-build.txt
+      - run: python standalone/build.py
+
+      - name: Smoke test
+        env:
+          XMEYE_NO_KEYRING: "1"
+        run: |
+          export XMEYE_DATA_DIR="$RUNNER_TEMP/xmeye-data"
+          case "$RUNNER_OS" in
+            Windows) exe=$(ls standalone/dist/*.exe) ;;
+            macOS)
+              ditto -x -k standalone/dist/*.zip "$RUNNER_TEMP/app"
+              exe="$RUNNER_TEMP/app/XMeye Full NVR.app/Contents/MacOS/XMeye Full NVR" ;;
+            Linux) exe=$(ls standalone/dist/XMeye-Full-NVR-*-linux-*) ;;
+          esac
+          "$exe" --background --no-tray &
+          for i in $(seq 30); do curl -sf http://127.0.0.1:18765/api/ping && break; sleep 2; done
+          curl -sf http://127.0.0.1:18765/api/ping
+          curl -sf -o /dev/null http://127.0.0.1:18765/setup
+          curl -sf -o /dev/null http://127.0.0.1:18765/panel/xmeye-panel.js
+          kill $! || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-${{ matrix.os }}
+          path: standalone/dist/XMeye-Full-NVR-*
+
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" standalone/dist/XMeye-Full-NVR-* --clobber

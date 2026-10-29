@@ -1,0 +1,35 @@
+:root { color-scheme: dark; --bg:#0f1012; --card:#17191d; --line:#262930; --text:#e8e8ea; --dim:#9a9ca6;
+  --accent:#2d6cdf; --ok:#22c55e; --err:#f87171; }
+* { box-sizing:border-box; }
+html, body { margin:0; background:var(--bg); color:var(--text);
+  font:15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+a { color:#7ab0ff; }
+header { display:flex; align-items:center; gap:10px; height:56px; padding:0 16px; border-bottom:1px solid #1f2125; }
+header img { width:30px; height:30px; border-radius:8px; }
+header h1 { font-size:19px; font-weight:400; margin:0; flex:1; }
+main { max-width:760px; margin:0 auto; padding:16px; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px 18px; margin:0 0 14px; }
+.card h2 { font-size:16px; font-weight:600; margin:0 0 12px; }
+.grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:12px; }
+label { display:flex; flex-direction:column; gap:4px; font-size:13px; color:var(--dim); }
+label.check { flex-direction:row; align-items:center; gap:8px; font-size:14px; color:var(--text); }
+input[type=text], input[type=password], input[type=number] { font:inherit; color:var(--text); background:#0f1114;
+  border:1px solid #30333b; border-radius:9px; padding:8px 10px; width:100%; }
+input:focus { outline:2px solid var(--accent); outline-offset:-1px; }
+input[type=checkbox] { width:18px; height:18px; accent-color:var(--accent); }
+button { font:inherit; border:0; border-radius:20px; padding:8px 18px; cursor:pointer; background:#262a31; color:var(--text); }
+button.primary { background:var(--accent); color:#fff; }
+button:disabled { opacity:.5; cursor:default; }
+.row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:14px; }
+.msg { font-size:14px; color:var(--dim); }
+.msg.ok { color:var(--ok); } .msg.err { color:var(--err); }
+.status { display:flex; align-items:center; gap:10px; }
+.dot { width:10px; height:10px; border-radius:50%; background:#666; flex:none; }
+.dot.ok { background:var(--ok); } .dot.err { background:var(--err); }
+table { width:100%; border-collapse:collapse; }
+td, th { padding:6px 6px; text-align:left; font-size:14px; border-bottom:1px solid #22252b; }
+th { color:var(--dim); font-weight:500; font-size:12px; }
+td.num { color:var(--dim); width:36px; }
+td.show { width:60px; text-align:center; }
+.hint { font-size:13px; color:var(--dim); margin:8px 0 0; }
+.login { max-width:340px; margin:12vh auto; }

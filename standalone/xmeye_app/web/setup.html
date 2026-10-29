@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Settings · XMeye Full NVR</title>
+<link rel="icon" href="/panel/logo.png">
+<link rel="stylesheet" href="/app/app.css">
+</head>
+<body>
+<header>
+  <img src="/panel/logo.png" alt="">
+  <h1>XMeye Full NVR</h1>
+  <a href="/" id="open" hidden>Open cameras</a>
+</header>
+<main>
+  <div class="card status"><span class="dot" id="dot"></span><span id="status">Loading…</span></div>
+
+  <form class="card" id="nvr">
+    <h2>NVR</h2>
+    <div class="grid">
+      <label>Address (IP or name)<input type="text" name="host" required placeholder="192.168.1.10"></label>
+      <label>User<input type="text" name="username" required autocomplete="off"></label>
+      <label>Password<input type="password" name="password" autocomplete="new-password"></label>
+      <label>DVRIP port<input type="number" name="port" min="1" max="65535" value="34567"></label>
+      <label>RTSP port<input type="number" name="rtsp_port" min="1" max="65535" value="554"></label>
+    </div>
+    <p class="hint">The same login as in the XMeye app. The password is kept in this computer's keychain.</p>
+    <div class="row">
+      <button type="button" id="test">Test connection</button>
+      <button type="submit" class="primary">Save and connect</button>
+      <span class="msg" id="nvr-msg"></span>
+    </div>
+  </form>
+
+  <form class="card" id="cams" hidden>
+    <h2>Cameras</h2>
+    <table><thead><tr><th>#</th><th>Name</th><th>Show</th></tr></thead><tbody></tbody></table>
+    <label class="check" style="margin-top:14px"><input type="checkbox" name="transcode_h265">
+      Convert H.265 recordings to H.264 for browsers that cannot play H.265</label>
+    <div class="row"><button type="submit" class="primary">Save cameras</button><span class="msg" id="cams-msg"></span></div>
+  </form>
+
+  <form class="card" id="access">
+    <h2>Access</h2>
+    <label class="check"><input type="checkbox" name="lan"> Allow other devices on the network (phone, tablet, other PCs)</label>
+    <div class="grid" style="margin-top:12px">
+      <label><span>Web password <span id="pw-state"></span></span><input type="password" name="web_password" autocomplete="new-password" placeholder="at least 8 characters"></label>
+      <label>Port<input type="number" name="http_port" min="1024" max="65535"></label>
+    </div>
+    <p class="hint" id="urls"></p>
+    <p class="hint">This computer never needs the password. Others log in with it.</p>
+    <div class="row"><button type="submit" class="primary">Save access</button><span class="msg" id="access-msg"></span></div>
+  </form>
+
+  <div class="card">
+    <h2>App</h2>
+    <label class="check"><input type="checkbox" id="autostart"> Start when I log in to this computer</label>
+    <p class="hint" id="version"></p>
+  </div>
+</main>
+<script type="module" src="/app/setup.js"></script>
+</body>
+</html>

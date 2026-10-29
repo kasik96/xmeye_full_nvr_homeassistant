@@ -3,3 +3,5 @@ __pycache__/
 *.xm
 *.m4s
 *.private.md
+standalone/build/
+standalone/dist/

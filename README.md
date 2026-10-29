@@ -27,6 +27,9 @@ One integration for a Xiongmai / XMeye NVR:
 
 <sub>Camera images are blurred for privacy.</sub>
 
+**No Home Assistant?** The same panel also runs as a [standalone app](#standalone-app-without-home-assistant)
+for Windows, macOS and Linux.
+
 Talks the NVR's own DVRIP protocol (port 34567, what the XMeye app uses) for recordings
 and its RTSP server (port 554) for live video. Tested on an NBD88X16S-KL-V3 NVR,
 firmware V4.03.R11, with H.264 and H.265 cameras, on Home Assistant OS 2026.10.
@@ -66,6 +69,44 @@ The panel works on phones too. The event list moves below the player.
 
 **Options:** camera names (the NVR's channel titles by default; an empty name hides the
 channel), and whether H.265 recordings are transcoded to H.264 for playback.
+
+## Standalone app (without Home Assistant)
+
+The panel (live grid, recordings, events, NVR settings and HomeKit) as a program of its own.
+It needs no Home Assistant and nothing else installed.
+
+1. Download the file for your computer from the
+   [latest release](https://github.com/kasik96/xmeye_full_nvr_homeassistant/releases/latest):
+   `…-windows-x64.exe`, `…-macos-arm64.zip` (Apple silicon), `…-macos-x64.zip` (Intel) or `…-linux-x64`.
+2. Start it. The browser opens `http://localhost:18765`. On the first start enter the NVR's address,
+   user and password (the same as in the XMeye app). The password is kept in the system keychain
+   (Windows Credential Manager, macOS Keychain).
+3. Close the browser whenever you like. The app keeps running with an icon in the notification area
+   (Windows) or menu bar (macOS): *Open*, *Start when I log in*, *Quit*.
+
+The first start downloads ffmpeg (about 30 MB, the static builds from the
+[imageio-ffmpeg](https://pypi.org/project/imageio-ffmpeg/) wheels on PyPI) and go2rtc 1.9.14 from
+GitHub. Both are pinned and checked by SHA-256. The settings, the motion event history and these
+downloads live in `%APPDATA%\XMeye Full NVR` (Windows), `~/Library/Application Support/XMeye Full NVR`
+(macOS) or `~/.config/xmeye-full-nvr` (Linux), with a log in `xmeye.log`.
+
+**Other devices.** By default only the computer itself can open the app. Settings → *Access* →
+*Allow other devices on the network* asks for a web password and shows the address to open on a
+phone or tablet (`http://<computer's IP>:18765`). Other devices log in with that password. When
+Windows asks whether go2rtc and the app may use the network, allow *private networks*: live video
+uses port 18556 (TCP and UDP).
+
+**The file is not signed.** Windows SmartScreen says *Windows protected your PC*: click
+*More info → Run anyway*. macOS says the app cannot be checked: open *System Settings → Privacy &
+Security* and click *Open Anyway*. The app is built from this repository by
+[GitHub Actions](.github/workflows/standalone.yml).
+
+What the standalone app does not have: the Home Assistant entities (motion sensors, cameras for
+dashboards and automations). It uses its own connections to the NVR, so running it next to
+the integration adds RTSP connections on the NVR.
+
+From source: `pip install -r standalone/requirements.txt`, then `python -m xmeye_app` in
+`standalone/`. `python standalone/build.py` builds the app for the platform it runs on.
 
 ## HomeKit
 

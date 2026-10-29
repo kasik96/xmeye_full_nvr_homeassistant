@@ -58,7 +58,8 @@ makes a stream that reads from itself.
 2. `FrameParser` splits the frames. The first 50 video frames are buffered to learn fps, codec and whether
    there is audio.
 3. Video → `tsmux.TsMuxer` (MPEG-TS, PTS = frame × 90000 / fps) → ffmpeg stdin. Audio (raw G.711) goes to
-   a second pipe, and gaps are padded with silence up to the video clock. Raw H.264 on a pipe has no
+   ffmpeg's second input over a loopback TCP connection (`tcp://127.0.0.1:<port>`; Windows has no inherited
+   pipe fds), and gaps are padded with silence up to the video clock. Raw H.264 on a pipe has no
    timestamps. ffmpeg then stops reading the other input, and the pipeline stalls.
 4. ffmpeg → HLS (fMP4, 4 s segments, EVENT playlist) in a temp dir. `/api/xmeye/hls/<token>/…` serves it
    without HA auth: the random token is the authorization, like HA's own stream URLs. The playlist is
@@ -109,3 +110,30 @@ The panel (`frontend/xmeye-panel.js`) is a plain web component without a build s
 `tools/mock_nvr.py` serves login, system info, titles, channel status, calendar, file queries and downloads.
 Run it with a capture in the NVR frame format. A local HA dev install with this repo's `custom_components`
 covers the config flow, the panel, thumbnails and playback.
+
+## Code layout and the standalone app
+
+The integration's HA-free modules are shared with the standalone app in `standalone/`:
+`dvrip`, `tsmux`, `nvr` (one NVR: file lists, events), `commands` (the panel's WebSocket commands),
+`playback`, `thumbnails`, `alarm`, `homekit`, `go2rtc`, `util`, `const`. None of them imports
+`homeassistant` at run time (`build.py` checks). They take what HA used to provide as arguments:
+a `Store`-like object (`async_load`, `async_save`, `async_delay_save`), file paths and an aiohttp
+session. The HA side is `__init__.py`, `api.py` (registers `commands.COMMANDS` on HA's WebSocket API),
+`camera.py`, `binary_sensor.py`, `config_flow.py` and `panel.py`.
+
+The app (`standalone/xmeye_app`) loads those modules as the package `xmeye_core`: from a checkout
+straight from `custom_components/xmeye` without running its `__init__.py` (`core.py`), in the built app
+from a copy `build.py` makes. It serves the same `xmeye-panel.js` with a stand-in for HA's `hass`
+object (`web/main.js`, `web/connection.js`): its WebSocket speaks HA's `{id, type}` / `result` / `event`
+messages, runs the shared commands, and relays `camera/webrtc/*` to its own go2rtc's WebSocket API
+(`live.py`: API and RTSP on localhost, WebRTC on `:18556`; the NVR's RTSP URLs are added over the API so
+the password is never written to disk). `/api/snapshot/<entity>` is go2rtc's `frame.jpeg`.
+
+Access (`server.py`): only requests to `localhost` from this computer skip the login. With LAN access on,
+everyone else needs the web password (PBKDF2, session cookie). WebSockets and POSTs must come from the
+same origin. Settings are in `settings.json` in the data dir, the NVR password in the keychain
+(`keyring`), or a 0600 file without one. `XMEYE_DATA_DIR` and `XMEYE_NO_KEYRING=1` are for tests.
+
+Builds: `python standalone/build.py` (PyInstaller; a one-file `.exe` on Windows, an `.app` in a zip on
+macOS, a one-file binary on Linux). The `Standalone app` workflow builds all four on every push, starts
+each one for a smoke test, and attaches them to a published release.
