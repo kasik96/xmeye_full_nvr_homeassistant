@@ -14,9 +14,6 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 import json
 
-from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.storage import Store
-
 from .dvrip import (
     MSG_KEEPALIVE,
     Connection,
@@ -24,6 +21,7 @@ from .dvrip import (
     DVRIPClient,
     DVRIPError,
 )
+from .util import Store, background
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -44,10 +42,9 @@ KINDS = {
 class AlarmListener:
     """Keeps an alarm subscription open and stores motion periods."""
 
-    def __init__(self, hass: HomeAssistant, client: DVRIPClient, entry_id: str) -> None:
-        self.hass = hass
+    def __init__(self, client: DVRIPClient, store: Store) -> None:
         self._client = client
-        self._store: Store[dict] = Store(hass, 1, f"xmeye.events.{entry_id}")
+        self._store = store
         # finished events: [channel (0-based), kind, begin, end]
         self.events: list[list] = []
         # running: (channel, kind) -> begin
@@ -59,7 +56,7 @@ class AlarmListener:
     async def async_start(self) -> None:
         stored = await self._store.async_load() or {}
         self.events = stored.get("events", [])
-        self._task = self.hass.async_create_background_task(self._run(), "xmeye alarms")
+        self._task = background(self._run(), "xmeye alarms")
 
     async def async_stop(self) -> None:
         if self._task:
@@ -67,7 +64,6 @@ class AlarmListener:
         self._close_running(datetime.now())
         await self._store.async_save(self._data())
 
-    @callback
     def async_add_listener(self, update: Callable[[], None]) -> Callable[[], None]:
         self._listeners.append(update)
         return lambda: self._listeners.remove(update)

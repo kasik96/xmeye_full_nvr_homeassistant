@@ -13,13 +13,11 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
-from homeassistant.core import HomeAssistant
-
 from .const import THUMB_CACHE, THUMB_OFFSET, THUMB_WIDTH
 from .dvrip import CODEC_H265, FRAME_I, DVRIPError, Frame, FrameParser
 
 if TYPE_CHECKING:
-    from . import XMeyeData
+    from .nvr import XMeyeData
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -27,8 +25,7 @@ TIMEOUT = 20
 
 
 class ThumbnailCache:
-    def __init__(self, hass: HomeAssistant, ffmpeg: str) -> None:
-        self.hass = hass
+    def __init__(self, ffmpeg: str) -> None:
         self._ffmpeg = ffmpeg
         self._cache: OrderedDict[tuple, bytes | None] = OrderedDict()
         self._pending: dict[tuple, asyncio.Future] = {}

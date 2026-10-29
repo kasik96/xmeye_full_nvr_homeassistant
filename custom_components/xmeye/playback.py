@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import os
 import secrets
 import shutil
 import tempfile
@@ -17,12 +16,7 @@ from pathlib import Path
 
 from aiohttp import web
 
-from homeassistant.components.http import HomeAssistantView
-from homeassistant.const import EVENT_HOMEASSISTANT_STOP
-from homeassistant.core import Event, HomeAssistant
-
 from .const import (
-    DOMAIN,
     HLS_SEGMENT_SECONDS,
     MAX_SESSIONS,
     PLAYLIST_WAIT,
@@ -42,6 +36,7 @@ from .dvrip import (
     stamp_seconds,
 )
 from .tsmux import TsMuxer
+from .util import background
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -57,17 +52,73 @@ FPS_WINDOW = 6  # s of time stamps before trusting the measured frame rate
 GAP_SECONDS = 10
 
 
+class _AudioInput:
+    """Raw G.711 for ffmpeg's second input over a loopback TCP connection
+    (portable: Windows has no inherited pipe fds). Buffered until ffmpeg connects."""
+
+    def __init__(self) -> None:
+        self.port = 0
+        self._server: asyncio.Server | None = None
+        self._writer: asyncio.StreamWriter | None = None
+        self._buffer = bytearray()
+        self._eof = False
+        self._closed = asyncio.Event()
+
+    async def listen(self) -> None:
+        self._server = await asyncio.start_server(self._accept, "127.0.0.1", 0)
+        self.port = self._server.sockets[0].getsockname()[1]
+
+    async def _accept(self, _reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        if self._writer is not None:
+            writer.close()
+            return
+        self._writer = writer
+        assert self._server
+        self._server.close()
+        writer.write(bytes(self._buffer))
+        self._buffer.clear()
+        if self._eof:
+            writer.close()
+        await self._closed.wait()
+
+    def write(self, data: bytes) -> None:
+        if self._writer is not None:
+            self._writer.write(data)
+        else:
+            self._buffer += data
+
+    def buffered(self) -> int:
+        if self._writer is not None:
+            return self._writer.transport.get_write_buffer_size()
+        return len(self._buffer)
+
+    async def drain(self) -> None:
+        if self._writer is not None:
+            await self._writer.drain()
+
+    def end(self) -> None:
+        """No more audio; sent once ffmpeg has connected."""
+        self._eof = True
+        if self._writer is not None:
+            self._writer.close()
+
+    def close(self) -> None:
+        if self._server:
+            self._server.close()
+        if self._writer is not None:
+            self._writer.close()
+        self._closed.set()
+
+
 class PlaybackSession:
     def __init__(
         self,
-        hass: HomeAssistant,
         client: DVRIPClient,
         rec: Recording,
         ffmpeg: str,
         transcode_h265: bool,
         speed: int = 1,
     ) -> None:
-        self.hass = hass
         self.speed = speed
         # ≥ FAST_SPEED: key frames only, no audio, time line compressed by `speed`
         self._fast = speed >= FAST_SPEED
@@ -96,15 +147,13 @@ class PlaybackSession:
         self._last_stamp = 0
 
     def start(self) -> None:
-        self._task = self.hass.async_create_background_task(
-            self._run(), f"{DOMAIN} playback {self.rec.file_name}"
-        )
+        self._task = background(self._run(), f"xmeye playback {self.rec.file_name}")
 
     def touch(self) -> None:
         self.last_access = asyncio.get_running_loop().time()
 
     async def _run(self) -> None:
-        audio_writer: asyncio.StreamWriter | None = None
+        audio_in: _AudioInput | None = None
         try:
             async with self.client.download(self.rec) as chunks:
                 parser = FrameParser()
@@ -139,16 +188,16 @@ class PlaybackSession:
                                 audio_codec = frame.codec
                         if video_frames < PROBE_VIDEO_FRAMES:
                             continue
-                        audio_writer = await self._start_ffmpeg(
+                        audio_in = await self._start_ffmpeg(
                             fps, video_codec, None if self._fast else AUDIO_FORMATS.get(audio_codec)
                         )
                         frames, pending, started = pending, [], True
-                    await self._write(frames, audio_writer)
+                    await self._write(frames, audio_in)
                 if not started and pending:
-                    audio_writer = await self._start_ffmpeg(
+                    audio_in = await self._start_ffmpeg(
                         fps, video_codec, None if self._fast else AUDIO_FORMATS.get(audio_codec)
                     )
-                    await self._write(pending, audio_writer)
+                    await self._write(pending, audio_in)
                 _LOGGER.debug(
                     "%s: %d video frames over %.1f s (%.2f fps, header %d), %.1f s audio "
                     "(%.1f s silence added), %d junk bytes",
@@ -161,13 +210,15 @@ class PlaybackSession:
                     self._padded / SAMPLE_RATE,
                     parser.skipped,
                 )
-            await self._finish_ffmpeg(audio_writer)
+            await self._finish_ffmpeg(audio_in)
         except asyncio.CancelledError:
             raise
         except (DVRIPError, OSError, ConnectionError) as err:
             self.error = str(err)
             _LOGGER.warning("Playback of %s failed: %s", self.rec.file_name, err)
         finally:
+            if audio_in:
+                audio_in.close()
             if self._proc and self._proc.returncode is None:
                 with contextlib.suppress(ProcessLookupError):
                     self._proc.kill()
@@ -175,7 +226,7 @@ class PlaybackSession:
 
     async def _start_ffmpeg(
         self, fps: int, codec: int, audio: str | None
-    ) -> asyncio.StreamWriter | None:
+    ) -> _AudioInput | None:
         h265 = codec == CODEC_H265
         self._fps = fps
         self._fps_est = float(fps or 25)
@@ -185,12 +236,13 @@ class PlaybackSession:
             self._ffmpeg, "-hide_banner", "-loglevel", "warning",
             "-thread_queue_size", "1024", "-f", "mpegts", "-i", "pipe:0",
         ]  # fmt: skip
-        audio_fd = None
+        audio_in = None
         if audio:
-            read_fd, audio_fd = os.pipe()
+            audio_in = _AudioInput()
+            await audio_in.listen()
             args += [
-                "-thread_queue_size", "1024",
-                "-f", audio, "-ar", str(SAMPLE_RATE), "-ac", "1", "-i", f"pipe:{read_fd}",
+                "-thread_queue_size", "1024", "-f", audio, "-ar", str(SAMPLE_RATE), "-ac", "1",
+                "-i", f"tcp://127.0.0.1:{audio_in.port}",
             ]  # fmt: skip
         args += ["-map", "0:v"]
         if h265 and self._transcode_h265:
@@ -215,27 +267,16 @@ class PlaybackSession:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
-            pass_fds=(read_fd,) if audio else (),
         )
-        self.hass.async_create_background_task(
-            self._log_stderr(self._proc), f"{DOMAIN} ffmpeg log"
-        )
-        if not audio:
-            return None
-        os.close(read_fd)
-        loop = asyncio.get_running_loop()
-        pipe = os.fdopen(audio_fd, "wb", buffering=0)
-        transport, protocol = await loop.connect_write_pipe(
-            lambda: asyncio.streams.FlowControlMixin(loop=loop), pipe
-        )
-        return asyncio.StreamWriter(transport, protocol, None, loop)
+        background(self._log_stderr(self._proc), "xmeye ffmpeg log")
+        return audio_in
 
     async def _log_stderr(self, proc: asyncio.subprocess.Process) -> None:
         assert proc.stderr
         async for line in proc.stderr:
             _LOGGER.debug("ffmpeg %s: %s", self.rec.file_name, line.decode(errors="replace").rstrip())
 
-    async def _write(self, frames, audio_writer: asyncio.StreamWriter | None) -> None:
+    async def _write(self, frames, audio_in: _AudioInput | None) -> None:
         """Feed ffmpeg. Audio gaps are filled with silence up to the video clock:
         ffmpeg reads its inputs in timestamp order, so an audio input that falls
         behind (cameras send audio only now and then) would stall the video."""
@@ -253,19 +294,19 @@ class PlaybackSession:
                     video.write(self._ts.video(frame.data, pts, keyframe))
                 self._video_frames += 1
                 self._clock += 1 / self._fps_est
-                if audio_writer:
+                if audio_in:
                     behind = int(self._clock * SAMPLE_RATE) - self._audio_samples
                     if behind > SAMPLE_RATE // 4:
-                        audio_writer.write(self._silence * behind)
+                        audio_in.write(self._silence * behind)
                         self._audio_samples += behind
                         self._padded += behind
-            elif frame.kind == FRAME_AUDIO and audio_writer:
-                audio_writer.write(frame.data)
+            elif frame.kind == FRAME_AUDIO and audio_in:
+                audio_in.write(frame.data)
                 self._audio_samples += len(frame.data)
         await video.drain()
         # Audio is tiny; only wait for it if it piles up, never block video on it.
-        if audio_writer and audio_writer.transport.get_write_buffer_size() > 1 << 20:
-            await audio_writer.drain()
+        if audio_in and audio_in.buffered() > 1 << 20:
+            await audio_in.drain()
 
     def _sync_clock(self, stamp: int) -> None:
         """Estimate the real frame rate from the I-frames' 1-second time stamps."""
@@ -285,12 +326,12 @@ class PlaybackSession:
                 self._fps_est = min(max(fps, self._fps * 0.5, 1.0), self._fps * 1.5 + 1)
         self._last_stamp = seconds
 
-    async def _finish_ffmpeg(self, audio_writer: asyncio.StreamWriter | None) -> None:
+    async def _finish_ffmpeg(self, audio_in: _AudioInput | None) -> None:
         if not self._proc:
             self.error = "no video in recording"
             return
-        if audio_writer:
-            audio_writer.close()
+        if audio_in:
+            audio_in.end()
         assert self._proc.stdin
         self._proc.stdin.close()
         try:
@@ -305,7 +346,7 @@ class PlaybackSession:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + PLAYLIST_WAIT
         while loop.time() < deadline:
-            text = await self.hass.async_add_executor_job(_read_text, path)
+            text = await asyncio.to_thread(_read_text, path)
             if text and ("#EXT-X-ENDLIST" in text or text.count("#EXTINF") >= 2):
                 break
             if self.finished.is_set() and not text:
@@ -324,7 +365,7 @@ class PlaybackSession:
             self._task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._task
-        await self.hass.async_add_executor_job(shutil.rmtree, self.dir, True)
+        await asyncio.to_thread(shutil.rmtree, self.dir, True)
 
 
 def _remove_stale_dirs() -> None:
@@ -342,20 +383,14 @@ def _read_text(path: Path) -> str | None:
 class PlaybackManager:
     """Owns the playback sessions of all config entries."""
 
-    def __init__(self, hass: HomeAssistant, ffmpeg: str) -> None:
-        self.hass = hass
+    def __init__(self, ffmpeg: str) -> None:
         self.ffmpeg = ffmpeg
         self.sessions: dict[str, PlaybackSession] = {}
         self._reaper: asyncio.Task | None = None
 
     async def async_setup(self) -> None:
-        """Remove temp dirs left by a crash and clean up on shutdown."""
-        await self.hass.async_add_executor_job(_remove_stale_dirs)
-
-        async def _on_stop(_event: Event) -> None:
-            await self.close()
-
-        self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _on_stop)
+        """Remove temp dirs left by a crash; call close() at shutdown."""
+        await asyncio.to_thread(_remove_stale_dirs)
 
     async def start(
         self, client: DVRIPClient, rec: Recording, transcode_h265: bool, speed: int = 1
@@ -373,15 +408,11 @@ class PlaybackManager:
         while len(self.sessions) >= MAX_SESSIONS:
             oldest = min(self.sessions.values(), key=lambda s: s.last_access)
             await self._remove(oldest)
-        session = PlaybackSession(
-            self.hass, client, rec, self.ffmpeg, transcode_h265, speed
-        )
+        session = PlaybackSession(client, rec, self.ffmpeg, transcode_h265, speed)
         self.sessions[session.token] = session
         session.start()
         if self._reaper is None or self._reaper.done():
-            self._reaper = self.hass.async_create_background_task(
-                self._reap(), f"{DOMAIN} playback reaper"
-            )
+            self._reaper = background(self._reap(), "xmeye playback reaper")
         return session
 
     async def _remove(self, session: PlaybackSession) -> None:
@@ -407,37 +438,30 @@ class PlaybackManager:
             await self._remove(session)
 
 
-class PlaybackView(HomeAssistantView):
-    """Serves the HLS files. The random session token is the authorization,
+async def hls_response(
+    manager: PlaybackManager, token: str, name: str
+) -> web.StreamResponse:
+    """The HLS files of a session. The random session token is the authorization,
     like HA's own camera streams, because players fetch segments without
     the signed-path parameter."""
-
-    url = "/api/xmeye/hls/{token}/{name}"
-    name = "api:xmeye:hls"
-    requires_auth = False
-
-    def __init__(self, manager: PlaybackManager) -> None:
-        self.manager = manager
-
-    async def get(self, request: web.Request, token: str, name: str) -> web.StreamResponse:
-        session = self.manager.sessions.get(token)
-        if session is None:
-            raise web.HTTPNotFound
-        headers = {"Cache-Control": "no-cache"}
-        if name == PLAYLIST:
-            text = await session.playlist()
-            if text is None:
-                _LOGGER.warning(
-                    "No video for %s: %s", session.rec.file_name, session.error or "timeout"
-                )
-                raise web.HTTPNotFound
-            return web.Response(
-                text=text, content_type="application/vnd.apple.mpegurl", headers=headers
+    session = manager.sessions.get(token)
+    if session is None:
+        raise web.HTTPNotFound
+    headers = {"Cache-Control": "no-cache"}
+    if name == PLAYLIST:
+        text = await session.playlist()
+        if text is None:
+            _LOGGER.warning(
+                "No video for %s: %s", session.rec.file_name, session.error or "timeout"
             )
-        if "/" in name or ".." in name or not name.endswith((".mp4", ".m4s")):
             raise web.HTTPNotFound
-        session.touch()
-        path = session.dir / name
-        if not await self.manager.hass.async_add_executor_job(path.is_file):
-            raise web.HTTPNotFound
-        return web.FileResponse(path, headers={"Content-Type": "video/mp4", **headers})
+        return web.Response(
+            text=text, content_type="application/vnd.apple.mpegurl", headers=headers
+        )
+    if "/" in name or "\\" in name or ".." in name or not name.endswith((".mp4", ".m4s")):
+        raise web.HTTPNotFound
+    session.touch()
+    path = session.dir / name
+    if not await asyncio.to_thread(path.is_file):
+        raise web.HTTPNotFound
+    return web.FileResponse(path, headers={"Content-Type": "video/mp4", **headers})

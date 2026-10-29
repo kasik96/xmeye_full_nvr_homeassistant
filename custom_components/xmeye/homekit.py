@@ -11,21 +11,16 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import hashlib
 import logging
-import os
-import platform
 import secrets
-import shutil
 from pathlib import Path
 from typing import Any
 
+from aiohttp import ClientSession
 import yaml
 
-from homeassistant.const import EVENT_HOMEASSISTANT_STOP
-from homeassistant.core import Event, HomeAssistant
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.storage import Store
+from . import go2rtc
+from .util import Store, background
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -35,17 +30,6 @@ RTSP_PORT = 51832
 RESPAWN = 10
 # HAP endpoints; everything else of go2rtc's API stays closed on the LAN
 HAP_PATHS = ["/pair-setup", "/pair-verify", "/pairings", "/accessories", "/characteristics"]
-# Used when the system has no go2rtc (e.g. Home Assistant Core in a venv):
-# a pinned release from GitHub, checked against these hashes.
-GO2RTC_VERSION = "1.9.14"
-GO2RTC_URL = "https://github.com/AlexxIT/go2rtc/releases/download/v{version}/go2rtc_linux_{arch}"
-GO2RTC_SHA256 = {
-    "amd64": "32d616af226bd731678ffde328b94cfb94e30339bfefc469cfb76323144615a6",
-    "arm64": "359fabade8a7a51e81a55fe6df6b0ef81764a5e1d63179577534eaaa71904b50",
-    "arm": "4d7e1639af5a2722a28e864468fd8099b3c1682565446c798bf9e3b38fde12e4",
-}
-ARCHES = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64",
-          "armv7l": "arm", "armv6l": "arm"}
 # Trivial codes Apple rejects
 BAD_PINS = {f"{d}" * 8 for d in range(10)} | {"12345678", "87654321"}
 
@@ -97,13 +81,21 @@ def format_pin(pin: str) -> str:
 class HomeKitManager:
     """Owns the HomeKit go2rtc process for all NVRs."""
 
-    def __init__(self, hass: HomeAssistant, ffmpeg: str) -> None:
-        self.hass = hass
+    def __init__(
+        self,
+        ffmpeg: str,
+        store: Store,
+        config: Path,
+        cache_dir: Path,
+        session: ClientSession,
+    ) -> None:
         self._ffmpeg = ffmpeg
-        self._store: Store[dict] = Store(hass, 1, "xmeye.homekit")
+        self._store = store
+        self._cache_dir = cache_dir
+        self._session = session
         # stream name -> {"enabled", "pin", "name", "source", "entry_id", "channel"}
         self.cameras: dict[str, dict[str, Any]] = {}
-        self._config = Path(hass.config.path(".storage", "xmeye_homekit_go2rtc.yaml"))
+        self._config = config
         self._proc: asyncio.subprocess.Process | None = None
         self._runner: asyncio.Task | None = None
         self._binary: str | None = None
@@ -111,18 +103,13 @@ class HomeKitManager:
         self._lock = asyncio.Lock()
 
     async def async_setup(self) -> None:
+        """Load the cameras; call async_stop() at shutdown."""
         stored = await self._store.async_load() or {}
         self.cameras = stored.get("cameras", {})
-        self._binary = await self.hass.async_add_executor_job(shutil.which, "go2rtc")
-        if not self._binary:
-            cached = Path(self.hass.config.path(".storage", f"xmeye_go2rtc_{GO2RTC_VERSION}"))
-            if await self.hass.async_add_executor_job(cached.is_file):
-                self._binary = str(cached)
+        self._binary = await asyncio.to_thread(go2rtc.find_binary, self._cache_dir)
 
-        async def _stop(_event: Event) -> None:
-            await self._stop_process()
-
-        self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _stop)
+    async def async_stop(self) -> None:
+        await self._stop_process()
 
     @staticmethod
     def stream_name(serial: str, channel: int) -> str:
@@ -162,19 +149,19 @@ class HomeKitManager:
                 await self._stop_process()
                 return
             if not self._binary:
-                self._binary = await self._download()
-            if not self._binary:
-                _LOGGER.warning(self.error)
-                return
-            changed = await self.hass.async_add_executor_job(self._write_config, enabled)
+                try:
+                    self._binary = await go2rtc.download(self._session, self._cache_dir)
+                except Exception as err:  # noqa: BLE001
+                    self.error = f"could not download go2rtc: {err}"
+                    _LOGGER.warning(self.error)
+                    return
+            changed = await asyncio.to_thread(self._write_config, enabled)
             running = self._proc is not None and self._proc.returncode is None
             if running and not changed:
                 return
             await self._stop_process()
             self.error = None
-            self._runner = self.hass.async_create_background_task(
-                self._run(), "xmeye homekit go2rtc"
-            )
+            self._runner = background(self._run(), "xmeye homekit go2rtc")
 
     async def set_enabled(self, key: str, enabled: bool) -> None:
         self.cameras[key]["enabled"] = enabled
@@ -191,42 +178,13 @@ class HomeKitManager:
     async def reset_pairing(self, key: str) -> None:
         """Forget the Apple Home pairing and use a new code."""
         self.cameras[key]["pin"] = _new_pin()
-        await self.hass.async_add_executor_job(self._drop_pairings, key)
+        await asyncio.to_thread(self._drop_pairings, key)
         await self.apply()
 
-    async def _download(self) -> str | None:
-        """Fetch the pinned go2rtc release for this machine (systems without one)."""
-        arch = ARCHES.get(platform.machine().lower())
-        if platform.system() != "Linux" or arch not in GO2RTC_SHA256:
-            self.error = f"no go2rtc for {platform.system()} {platform.machine()}"
-            return None
-        target = Path(self.hass.config.path(".storage", f"xmeye_go2rtc_{GO2RTC_VERSION}"))
-        url = GO2RTC_URL.format(version=GO2RTC_VERSION, arch=arch)
-        _LOGGER.info("Downloading go2rtc %s for HomeKit from %s", GO2RTC_VERSION, url)
-        try:
-            async with async_get_clientsession(self.hass).get(url, timeout=120) as resp:
-                resp.raise_for_status()
-                data = await resp.read()
-        except Exception as err:  # noqa: BLE001
-            self.error = f"could not download go2rtc: {err}"
-            return None
-        if hashlib.sha256(data).hexdigest() != GO2RTC_SHA256[arch]:
-            self.error = "downloaded go2rtc has the wrong checksum"
-            return None
-
-        def _save() -> None:
-            tmp = target.with_suffix(".tmp")
-            tmp.write_bytes(data)
-            os.chmod(tmp, 0o755)
-            tmp.replace(target)
-
-        await self.hass.async_add_executor_job(_save)
-        return str(target)
-
     async def status(self) -> dict[str, Any]:
-        paired = await self.hass.async_add_executor_job(self._read_pairings)
+        paired = await asyncio.to_thread(self._read_pairings)
         return {
-            "available": bool(self._binary) or platform.system() == "Linux",
+            "available": bool(self._binary) or go2rtc.can_download(),
             "running": self._proc is not None and self._proc.returncode is None,
             "error": self.error,
             "port": HOMEKIT_PORT,
