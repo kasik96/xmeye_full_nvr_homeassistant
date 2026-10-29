@@ -122,7 +122,8 @@ aside { width:340px; flex:none; border-left:1px solid #1f2125; display:flex; fle
 .empty { color:#777; font-size:13px; padding:16px; }
 .kinds { overflow-x:auto; scrollbar-width:none; max-width:100%; }
 .kinds::-webkit-scrollbar { display:none; }
-.list .kinds { margin:2px 0 6px; align-self:flex-start; }
+.list .kinds { margin:2px 0 6px; flex-wrap:wrap; border-radius:14px; width:fit-content; }
+.list .kinds button { padding:4px 9px; }
 .ev .badge { position:absolute; left:6px; top:5px; font-size:10px; padding:1px 6px; border-radius:8px;
   background:#2d6cdfcc; color:#fff; }
 .kind { display:inline-block; font-size:10px; padding:1px 6px; border-radius:8px; background:#2d6cdf33; color:#9cf; margin-top:4px; }
