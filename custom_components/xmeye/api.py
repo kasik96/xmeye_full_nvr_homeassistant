@@ -9,6 +9,7 @@ import voluptuous as vol
 
 from homeassistant.components import websocket_api
 from homeassistant.components.http import HomeAssistantView
+from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
@@ -30,6 +31,19 @@ def async_setup(hass: HomeAssistant) -> None:
 def services(hass: HomeAssistant) -> Services:
     registry = er.async_get(hass)
     shared = hass.data[DOMAIN]
+
+    async def credentials_changed(entry_id: str, change: dict[str, Any]) -> None:
+        """Keep the config entry in step; the update reloads it."""
+        entry = hass.config_entries.async_get_entry(entry_id)
+        if entry is None:
+            return
+        data = dict(entry.data)
+        if "host" in change:
+            data[CONF_HOST], data[CONF_PORT] = change["host"], change["port"]
+        if "password" in change:
+            data[CONF_PASSWORD] = change["password"]
+        hass.config_entries.async_update_entry(entry, data=data)
+
     return Services(
         nvrs=lambda: {e.entry_id: e.runtime_data for e in loaded_entries(hass)},
         playback=shared["playback"],
@@ -37,6 +51,7 @@ def services(hass: HomeAssistant) -> Services:
         homekit=shared["homekit"],
         entity_id=lambda uid: registry.async_get_entity_id("camera", DOMAIN, uid),
         now=lambda: dt_util.now().replace(tzinfo=None),
+        credentials_changed=credentials_changed,
     )
 
 

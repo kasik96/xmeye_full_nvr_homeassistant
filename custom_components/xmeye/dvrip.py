@@ -317,6 +317,13 @@ class DVRIPClient:
         if reply.get("Ret") not in RET_OK:
             raise DVRIPError(f"setting {name} failed (Ret {reply.get('Ret')})")
 
+    async def query(self, msg_id: int, name: str, body: Any = None) -> dict[str, Any]:
+        """Any request by message id and name; the whole reply."""
+        payload: dict[str, Any] = {"Name": name}
+        if body is not None:
+            payload[name] = body
+        return await self.request(msg_id, payload)
+
     async def channel_titles(self) -> list[str]:
         reply = await self.request(MSG_CHANNEL_TITLE, {"Name": "ChannelTitle"})
         return [str(t).strip() for t in reply.get("ChannelTitle") or []]

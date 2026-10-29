@@ -26,8 +26,8 @@ BUILD = HERE / "build"
 DIST = HERE / "dist"
 NAME = "XMeye Full NVR"
 # the integration's modules the app uses; none may import homeassistant (except for type checking)
-CORE = ["alarm", "commands", "const", "dvrip", "go2rtc", "homekit", "nvr", "playback",
-        "thumbnails", "tsmux", "util"]  # fmt: skip
+CORE = ["alarm", "commands", "const", "dvrip", "go2rtc", "homekit", "nvr", "nvrconfig",
+        "playback", "thumbnails", "tsmux", "util"]  # fmt: skip
 ARCH = {"x86_64": "x64", "amd64": "x64", "arm64": "arm64", "aarch64": "arm64"}
 
 

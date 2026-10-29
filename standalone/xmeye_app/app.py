@@ -90,6 +90,7 @@ class App:
             thumbs=ThumbnailCache(ffmpeg),
             homekit=homekit,
             entity_id=lambda uid: f"camera.xmeye_{uid.lower()}",
+            credentials_changed=self._credentials_changed,
         )
         self.live = LiveServer(go2rtc, ffmpeg, self.dir / "live_go2rtc.yaml", self.session)
         await self._connect_loop()
@@ -183,6 +184,21 @@ class App:
             await self._disconnect()
         self.error = None
         self._task = background(self._connect_loop(), "xmeye connect")
+
+    async def _credentials_changed(self, _entry_id: str, change: dict[str, Any]) -> None:
+        """The settings page moved the NVR or changed our password on it."""
+        s = self.settings
+        if "host" in change:
+            s.host, s.port = change["host"], change["port"]
+        if "password" in change:
+            await asyncio.to_thread(self.config.set_password, change["password"])
+        await asyncio.to_thread(self.config.save)
+
+        async def later() -> None:
+            await asyncio.sleep(3)  # the NVR applies it after replying
+            await self.reconnect()
+
+        background(later(), "xmeye reconnect")
 
     async def test(self, host: str, port: int, username: str, password: str | None) -> dict[str, Any]:
         """Log in with these details; the NVR's model and channels."""

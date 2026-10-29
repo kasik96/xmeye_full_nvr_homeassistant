@@ -137,3 +137,19 @@ same origin. Settings are in `settings.json` in the data dir, the NVR password i
 Builds: `python standalone/build.py` (PyInstaller; a one-file `.exe` on Windows, an `.app` in a zip on
 macOS, a one-file binary on Linux). The `Standalone app` workflow builds all four on every push, starts
 each one for a smoke test, and attaches them to a published release.
+
+## NVR settings (`nvrconfig.py`, `frontend/xmeye-settings.js`)
+
+`xmeye/config` reads config names (1042), `xmeye/config_set` writes one (1040) if it matches `WRITABLE`.
+Values pass through `hide_secrets` (any string under a key ending in `pass`/`password`/`key` becomes
+`SECRET`) and back through `keep_secrets`, so stored passwords never leave the server. Per-channel configs
+use `Name.[i]`. Other messages: 1046 `ChannelTitle` (set), 1452 `OPTimeQuery`, 1450 `OPTimeSetting` /
+`OPMachine {Action: Reboot}`, 1460 `OPStorageManager {Action: Clear, SerialNo, PartNo, Type: Data}`,
+1470/1472/1474 authority list / users / groups, 1482/1484/1486 add / modify / delete user, 1488
+`ModifyPassword`. Users are returned without their password hashes (`Password`, `PasswordV2`, …).
+IPv4 addresses in the configs are little-endian hex (`0x6401A8C0` = 192.168.1.100). `network_set`
+writes `NetWork.NetCommon` (and DHCP) and then calls `Services.credentials_changed`, which moves the
+config entry (HA) or the app's settings to the new address; `user_password` on our own user does the
+same with the password. Verified on the test NVR: reading everything, writing and reading back
+(recording, detection, overlay, channel names, e-mail with its stored password kept), setting the
+clock. Not tried on it: formatting, reboot, network changes and the user commands.

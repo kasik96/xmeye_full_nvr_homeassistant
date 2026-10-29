@@ -18,7 +18,7 @@ async def async_setup(hass: HomeAssistant) -> None:
         [StaticPathConfig(PANEL_URL, str(FRONTEND), cache_headers=False)]
     )
     version = await hass.async_add_executor_job(
-        lambda: int((FRONTEND / "xmeye-panel.js").stat().st_mtime)
+        lambda: max(int(p.stat().st_mtime) for p in FRONTEND.glob("xmeye-*.js"))
     )
     await panel_custom.async_register_panel(
         hass,

@@ -38,6 +38,8 @@ class Services:
     # URL prefix of the HLS sessions
     hls_url: str = "/api/xmeye/hls"
     now: Callable[[], datetime] = field(default=datetime.now)
+    # the NVR's address or our user's password changed: {"host", "port"} / {"password"}
+    credentials_changed: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None
 
 
 Handler = Callable[[Services, dict[str, Any]], Awaitable[Any]]
@@ -348,3 +350,7 @@ async def homekit_set(svc: Services, msg: dict[str, Any]) -> Any:
     if "enabled" in msg:
         await manager.set_enabled(msg["key"], msg["enabled"])
     return await manager.status()
+
+
+# registers the NVR configuration commands
+from . import nvrconfig  # noqa: E402, F401

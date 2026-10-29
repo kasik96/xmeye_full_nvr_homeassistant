@@ -54,6 +54,10 @@ class XMeyeData:
     )
     _locks: dict[tuple[int, date], asyncio.Lock] = field(default_factory=dict)
 
+    def invalidate(self) -> None:
+        """Forget the cached file lists (after changing recording on the NVR)."""
+        self._cache.clear()
+
     def rtsp_url(self, channel: int, sub: bool) -> str:
         user = quote(self.username, safe="")
         password = quote(self.password, safe="")

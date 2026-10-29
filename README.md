@@ -53,8 +53,27 @@ columns (scrolling). Click a tile or an event to open that camera.
   live view.
 * Camera chips, previous / next camera, mute and fullscreen.
 
-**Settings** (admins): disk, retention and bitrate per camera, recording mode, motion
-detection, HomeKit on/off with pairing code.
+**Settings** (admins): the NVR's own configuration, so the XMeye and VMS apps are not needed:
+
+* **Overview:** disk, retention and bitrate per camera, quick recording and motion switches, HomeKit.
+* **Cameras:** name on the NVR, the IP camera's address and login, overlay (name and time in the
+  video), image (day/night, flip, mirror, backlight) and volume.
+* **Recording:** mode, weekly schedule (regular / motion / alarm periods), pre-record, file length;
+  copy one camera's setup to all.
+* **Detection:** motion, the camera's own alarms, faces, vehicles, covered camera and video loss, each
+  with what happens (record, push to the XMeye app, e-mail, snapshot, beep).
+* **Storage:** disks (with formatting), overwrite or stop when full, deleting old recordings, disk alarms.
+* **Network:** address, DHCP and ports (the app and Home Assistant follow the NVR to its new address),
+  DNS, RTSP, NTP, UPnP, XMeye cloud, push and e-mail.
+* **System:** device name, clock (set it from this computer), time zone and summer time, automatic
+  restart, NVR screen language and video standard, firmware updates, restart.
+* **Users:** add and delete users, rights, passwords. Changing the password of the user the
+  integration logs in with updates the integration too.
+* **Advanced:** any setting as the NVR stores it, as JSON.
+
+Stored passwords (cameras, e-mail, NTP) never reach the browser; they show as `••••••••` and stay as
+they are unless you type a new one. Formatting, network changes, restarts and deleting users ask
+first.
 
 The panel works on phones too. The event list moves below the player.
 

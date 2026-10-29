@@ -416,7 +416,7 @@ class XMeyePanel extends HTMLElement {
     const params = new URLSearchParams(location.search);
     const cam = this.cameras.findIndex((c) => `${c.entry_id}-${c.channel}` === params.get("camera"));
     if (cam >= 0) this.openCamera(cam);
-    else if (params.get("view") === "settings" && this.hass.user?.is_admin) this.showSettings();
+    else if (params.get("view") === "settings" && this.hass.user?.is_admin) this.showSettings(params.get("tab") || "overview");
     else this.showGrid();
     this.refreshEvents();
     this.eventsTimer = setInterval(() => this.refreshEvents(), 60000);
@@ -476,7 +476,7 @@ class XMeyePanel extends HTMLElement {
     root.querySelectorAll("[data-view]").forEach((b) =>
       b.addEventListener("click", () => {
         if (b.dataset.view === "grid") this.showGrid();
-        else if (b.dataset.view === "settings") this.showSettings();
+        else if (b.dataset.view === "settings") this.showSettings("overview");
         else this.openCamera(this.current ?? 0);
       })
     );
@@ -648,22 +648,47 @@ class XMeyePanel extends HTMLElement {
 
   // ------------------------------------------------------------ settings
 
-  async showSettings() {
+  async showSettings(tab = this.settingsTab || "overview") {
     this.view = "settings";
+    this.settingsTab = tab;
     this.stopPlayback();
     this.closeLive();
-    history.replaceState(null, "", `${location.pathname}?view=settings`);
-    const app = this.shadowRoot.querySelector(".app");
-    app.innerHTML = `${this.header()}<main class="scroll"><div class="settings"><div class="empty">Loading NVR settings…</div></div></main>`;
-    this.bindHeader(app);
-    const conn = this.hass.connection;
+    history.replaceState(null, "", `${location.pathname}?view=settings${tab === "overview" ? "" : `&tab=${tab}`}`);
+    // same cache-busting query as this file
+    const mod = await import(new URL(`./xmeye-settings.js${new URL(import.meta.url).search}`, import.meta.url));
+    if (!this.shadowRoot.querySelector("style[data-settings]")) {
+      const style = document.createElement("style");
+      style.dataset.settings = "";
+      style.textContent = mod.CSS;
+      this.shadowRoot.append(style);
+    }
     const entries = [...new Set(this.cameras.map((c) => c.entry_id))];
+    this.settingsEntry = entries.includes(this.settingsEntry) ? this.settingsEntry : entries[0];
+    const app = this.shadowRoot.querySelector(".app");
+    app.innerHTML = `${this.header()}<main class="scroll"><div class="settings">
+      <nav class="snav">${mod.TABS.map(([k, l]) => `<button data-tab="${k}" class="${k === tab ? "on" : ""}">${l}</button>`).join("")}</nav>
+      <div class="spane"><div class="empty">Loading NVR settings…</div></div></div></main>`;
+    this.bindHeader(app);
+    app.querySelectorAll("[data-tab]").forEach((b) => b.addEventListener("click", () => this.showSettings(b.dataset.tab)));
+    if (tab !== "overview") {
+      if (!this.settingsEntry) {
+        app.querySelector(".spane").innerHTML = `<div class="empty">No NVR connected.</div>`;
+        return;
+      }
+      if (this.nvrSettings?.entry !== this.settingsEntry) {
+        this.nvrSettings = new mod.NvrSettings(this, null, this.settingsEntry);
+      }
+      this.nvrSettings.pane = app.querySelector(".spane");
+      await this.nvrSettings.show(tab);
+      return;
+    }
+    const conn = this.hass.connection;
     try {
       this.nvr = {};
       for (const id of entries) this.nvr[id] = await conn.sendMessagePromise({ type: "xmeye/nvr", entry_id: id });
       this.homekit = await conn.sendMessagePromise({ type: "xmeye/homekit" });
     } catch (err) {
-      app.querySelector(".settings").innerHTML = `<div class="empty err">Could not read the NVR: ${err.message}</div>`;
+      app.querySelector(".spane").innerHTML = `<div class="empty err">Could not read the NVR: ${err.message}</div>`;
       return;
     }
     this.renderSettings();
@@ -678,8 +703,8 @@ class XMeyePanel extends HTMLElement {
   }
 
   renderSettings() {
-    const root = this.shadowRoot.querySelector(".settings");
-    if (!root || this.view !== "settings") return;
+    const root = this.shadowRoot.querySelector(".spane");
+    if (!root || this.view !== "settings" || this.settingsTab !== "overview") return;
     const hk = this.homekit ?? { cameras: [] };
     let html = "";
     for (const [entryId, st] of Object.entries(this.nvr)) {
