@@ -11,7 +11,9 @@ import contextlib
 import json
 import logging
 import logging.handlers
+import os
 import signal
+import ssl
 import subprocess
 import sys
 import threading
@@ -37,6 +39,20 @@ def _setup_logging(debug: bool) -> None:
         handlers=handlers,
     )
     logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
+
+
+def _ca_certificates() -> None:
+    """The bundled Python looks for CA certificates where the build machine kept
+    them; on macOS they are not there, and every download fails. Use certifi's
+    then (through SSL_CERT_FILE, which also covers the helpers we start)."""
+    paths = ssl.get_default_verify_paths()
+    if os.environ.get("SSL_CERT_FILE") or (paths.cafile and os.path.isfile(paths.cafile)):
+        return
+    if paths.capath and os.path.isdir(paths.capath) and os.listdir(paths.capath):
+        return
+    import certifi  # noqa: PLC0415
+
+    os.environ["SSL_CERT_FILE"] = certifi.where()
 
 
 def _hide_console_windows() -> None:
@@ -117,6 +133,7 @@ def main() -> None:
     parser.add_argument("--debug", action="store_true", help="debug logging")
     args = parser.parse_args()
     _setup_logging(args.debug)
+    _ca_certificates()
     frontend = core.load()
     if sys.platform == "win32":
         _hide_console_windows()

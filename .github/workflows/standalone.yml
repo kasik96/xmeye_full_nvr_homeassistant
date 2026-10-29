@@ -48,6 +48,16 @@ jobs:
           curl -sf http://127.0.0.1:18765/api/ping
           curl -sf -o /dev/null http://127.0.0.1:18765/setup
           curl -sf -o /dev/null http://127.0.0.1:18765/panel/xmeye-panel.js
+          # the first start downloads ffmpeg over HTTPS (needs CA certificates in the bundle)
+          log="$XMEYE_DATA_DIR/xmeye.log"
+          for i in $(seq 60); do
+            ls "$XMEYE_DATA_DIR"/bin/ffmpeg-imageio-* >/dev/null 2>&1 && break
+            grep -q "Could not download" "$log" && break
+            grep -q "Downloading ffmpeg" "$log" || { [ $i -gt 10 ] && break; }
+            sleep 2
+          done
+          cat "$log"
+          ! grep -q "Could not download" "$log"
           kill $! || true
 
       - uses: actions/upload-artifact@v4
