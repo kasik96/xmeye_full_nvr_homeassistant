@@ -53,6 +53,28 @@
     <div class="row"><button type="submit" class="primary">Save access</button><span class="msg" id="access-msg"></span></div>
   </form>
 
+  <form class="card" id="remote">
+    <h2>Remote access</h2>
+    <p class="hint" style="margin:0 0 12px">See the cameras away from home through a
+      <a href="https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/" target="_blank" rel="noopener">Cloudflare Tunnel</a>.
+      Nothing is opened on your router. Everyone logs in with the web password.</p>
+    <label class="check"><input type="radio" name="tunnel" value="off"> Off</label>
+    <label class="check"><input type="radio" name="tunnel" value="quick"> Quick tunnel: no account, a random address that changes each time the app starts</label>
+    <label class="check"><input type="radio" name="tunnel" value="token"> My Cloudflare tunnel: a fixed address on your own domain</label>
+    <div id="own" hidden>
+      <div class="grid" style="margin-top:12px">
+        <label><span>Tunnel token <span id="token-state"></span></span><input type="password" name="tunnel_token" autocomplete="off" placeholder="eyJh…"></label>
+        <label>Public hostname<input type="text" name="tunnel_hostname" placeholder="cameras.example.com"></label>
+      </div>
+      <p class="hint">In the Cloudflare dashboard: Zero Trust → Networks → Tunnels → Create a tunnel (cloudflared).
+        Copy the token from the install command. Add a public hostname with the service
+        <code id="service">http://localhost:18765</code>.</p>
+    </div>
+    <p class="hint" id="tunnel-state"></p>
+    <p class="hint">Live video goes over HLS through the tunnel: a few seconds behind, but it works on any network.</p>
+    <div class="row"><button type="submit" class="primary">Save remote access</button><span class="msg" id="remote-msg"></span></div>
+  </form>
+
   <div class="card">
     <h2>App</h2>
     <label class="check"><input type="checkbox" id="autostart"> Start when I log in to this computer</label>

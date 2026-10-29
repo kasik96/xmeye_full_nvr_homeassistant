@@ -1,8 +1,9 @@
-"""Settings in settings.json; the NVR password in the system keychain.
+"""Settings in settings.json; the NVR password and the Cloudflare tunnel token
+in the system keychain.
 
 The keychain is the Windows Credential Manager, the macOS Keychain or the
 Secret Service on Linux. Without one (a Linux box without a desktop) the
-password goes to a file only the user can read (also with XMEYE_NO_KEYRING=1,
+secrets go to files only the user can read (also with XMEYE_NO_KEYRING=1,
 for tests).
 """
 
@@ -26,6 +27,7 @@ from .store import write_private
 _LOGGER = logging.getLogger(__name__)
 
 KEYRING_ACCOUNT = "nvr"
+TUNNEL_ACCOUNT = "tunnel"
 HASH_ITERATIONS = 240_000
 
 
@@ -42,6 +44,9 @@ class Settings:
     lan: bool = False
     web_password: str = ""  # PBKDF2 hash
     http_port: int = 18765
+    # remote access through Cloudflare: "off", "quick" or "token" (needs web_password)
+    tunnel: str = "off"
+    tunnel_hostname: str = ""  # the public hostname of the user's own tunnel
 
     @property
     def configured(self) -> bool:
@@ -57,7 +62,10 @@ class Settings:
 class SettingsFile:
     def __init__(self, directory: Path) -> None:
         self.path = directory / "settings.json"
-        self._password_file = directory / "nvr_password"
+        self._files = {
+            KEYRING_ACCOUNT: directory / "nvr_password",
+            TUNNEL_ACCOUNT: directory / "tunnel_token",
+        }
         self.settings = self._read()
 
     def _read(self) -> Settings:
@@ -71,41 +79,54 @@ class SettingsFile:
     def save(self) -> None:
         write_private(self.path, json.dumps(dataclasses.asdict(self.settings), indent=1))
 
-    # --- NVR password --------------------------------------------------------
+    # --- secrets -------------------------------------------------------------
 
     def password(self) -> str:
+        return self._secret(KEYRING_ACCOUNT)
+
+    def set_password(self, value: str) -> None:
+        self._set_secret(KEYRING_ACCOUNT, value)
+
+    def tunnel_token(self) -> str:
+        return self._secret(TUNNEL_ACCOUNT)
+
+    def set_tunnel_token(self, value: str) -> None:
+        self._set_secret(TUNNEL_ACCOUNT, value)
+
+    def _secret(self, account: str) -> str:
         if os.environ.get("XMEYE_NO_KEYRING"):
-            return self._read_password_file()
+            return self._read_file(account)
         try:
             import keyring  # noqa: PLC0415
 
-            value = keyring.get_password(APP_NAME, KEYRING_ACCOUNT)
+            value = keyring.get_password(APP_NAME, account)
             if value is not None:
                 return value
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug("No keychain: %s", err)
-        return self._read_password_file()
+        return self._read_file(account)
 
-    def _read_password_file(self) -> str:
+    def _read_file(self, account: str) -> str:
         try:
-            return self._password_file.read_text("utf-8")
+            return self._files[account].read_text("utf-8")
         except OSError:
             return ""
 
-    def set_password(self, value: str) -> None:
+    def _set_secret(self, account: str, value: str) -> None:
+        path = self._files[account]
         if os.environ.get("XMEYE_NO_KEYRING"):
-            write_private(self._password_file, value)
+            write_private(path, value)
             return
         try:
             import keyring  # noqa: PLC0415
 
-            keyring.set_password(APP_NAME, KEYRING_ACCOUNT, value)
+            keyring.set_password(APP_NAME, account, value)
         except Exception as err:  # noqa: BLE001
-            _LOGGER.warning("No keychain (%s), keeping the NVR password in a private file", err)
-            write_private(self._password_file, value)
+            _LOGGER.warning("No keychain (%s), keeping the %s in a private file", err, account)
+            write_private(path, value)
         else:
             with contextlib.suppress(OSError):
-                self._password_file.unlink()
+                path.unlink()
 
 
 def hash_password(password: str) -> str:

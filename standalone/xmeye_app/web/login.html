@@ -14,6 +14,11 @@
   <p class="msg err" id="wrong" hidden>Wrong password.</p>
   <div class="row"><button class="primary" type="submit">Log in</button></div>
 </form>
-<script>if (location.search.includes("wrong")) document.getElementById("wrong").hidden = false;</script>
+<script>
+const wrong = new URLSearchParams(location.search).get("wrong");
+const el = document.getElementById("wrong");
+if (wrong) el.hidden = false;
+if (wrong === "many") el.textContent = "Too many wrong passwords. Try again in 15 minutes.";
+</script>
 </body>
 </html>

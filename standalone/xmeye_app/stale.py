@@ -1,6 +1,6 @@
-"""Stop go2rtc processes a previous run left behind (after a crash or a kill),
-which would still hold their ports. Only processes started with a config file
-from our data directory are touched."""
+"""Stop go2rtc and cloudflared processes a previous run left behind (after a
+crash or a kill), which would still hold their ports or tunnel. Only processes
+started from or with a config file in our data directory are touched."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ _LOGGER = logging.getLogger(__name__)
 def _processes() -> list[tuple[int, str]]:
     if platform.system() == "Windows":
         script = (
-            "Get-CimInstance Win32_Process -Filter \"Name like '%go2rtc%'\" | "
+            "Get-CimInstance Win32_Process -Filter \"Name like '%go2rtc%' or Name like '%cloudflared%'\" | "
             "ForEach-Object { \"$($_.ProcessId)`t$($_.CommandLine)\" }"
         )
         out = subprocess.run(
@@ -38,7 +38,10 @@ def _processes() -> list[tuple[int, str]]:
     return procs
 
 
-def stop_stale_go2rtc(data_dir: Path) -> None:
+HELPERS = ("go2rtc", "cloudflared")
+
+
+def stop_stale_helpers(data_dir: Path) -> None:
     marker = str(data_dir)
     try:
         procs = _processes()
@@ -46,8 +49,9 @@ def stop_stale_go2rtc(data_dir: Path) -> None:
         _LOGGER.debug("Cannot list processes: %s", err)
         return
     for pid, command in procs:
-        if pid != os.getpid() and "go2rtc" in command and marker in command:
-            _LOGGER.info("Stopping go2rtc left from a previous run (pid %d)", pid)
+        name = next((h for h in HELPERS if h in command), None)
+        if pid != os.getpid() and name and marker in command:
+            _LOGGER.info("Stopping %s left from a previous run (pid %d)", name, pid)
             try:
                 os.kill(pid, signal.SIGTERM)
             except OSError as err:

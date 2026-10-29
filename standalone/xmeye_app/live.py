@@ -64,7 +64,7 @@ class LiveServer:
         self._streams = streams
         self.client = self._new_client()
         config = {
-            "app": {"modules": ["api", "ws", "rtsp", "webrtc", "mjpeg", "ffmpeg"]},
+            "app": {"modules": ["api", "ws", "rtsp", "webrtc", "mjpeg", "hls", "ffmpeg"]},
             "api": {"listen": f"127.0.0.1:{API_PORT}"},
             "rtsp": {"listen": f"127.0.0.1:{RTSP_PORT}"},
             "webrtc": {"listen": f":{WEBRTC_PORT}"},

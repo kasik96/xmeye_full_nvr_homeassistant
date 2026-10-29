@@ -134,6 +134,15 @@ everyone else needs the web password (PBKDF2, session cookie). WebSockets and PO
 same origin. Settings are in `settings.json` in the data dir, the NVR password in the keychain
 (`keyring`), or a 0600 file without one. `XMEYE_DATA_DIR` and `XMEYE_NO_KEYRING=1` are for tests.
 
+Remote access (`tunnel.py`): cloudflared (`--url http://127.0.0.1:<port>` for a quick tunnel, or
+`tunnel run` with `TUNNEL_TOKEN` in its environment for the user's own) forwards to the app on localhost.
+Requests carrying `Cf-Connecting-IP`/`Cf-Ray`/`Cf-Visitor` are never local, whatever their Host says,
+and are let in only while a tunnel is on and they come from loopback; the login is limited to 10 wrong
+passwords per client address in 15 minutes, and the cookie is `Secure`. A WebSocket opened through the
+tunnel answers `camera/webrtc/offer` with an error, which makes the panel fall back to `camera/stream`:
+`/api/live/<stream>/stream.m3u8` proxies go2rtc's fMP4 HLS (`hls` module, only known streams and HLS
+file names).
+
 Builds: `python standalone/build.py` (PyInstaller; a one-file `.exe` on Windows, an `.app` in a zip on
 macOS, a one-file binary on Linux). The `Standalone app` workflow builds all four on every push, starts
 each one for a smoke test, and attaches them to a published release.

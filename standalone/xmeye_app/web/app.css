@@ -16,7 +16,10 @@ label.check { flex-direction:row; align-items:center; gap:8px; font-size:14px; c
 input[type=text], input[type=password], input[type=number] { font:inherit; color:var(--text); background:#0f1114;
   border:1px solid #30333b; border-radius:9px; padding:8px 10px; width:100%; }
 input:focus { outline:2px solid var(--accent); outline-offset:-1px; }
-input[type=checkbox] { width:18px; height:18px; accent-color:var(--accent); }
+input[type=checkbox], input[type=radio] { width:18px; height:18px; accent-color:var(--accent); flex:none; margin:0; }
+#remote label.check { margin:6px 0; }
+.url { font-size:15px; color:var(--text); word-break:break-all; }
+code { font-size:13px; background:#0f1114; padding:1px 5px; border-radius:5px; }
 button { font:inherit; border:0; border-radius:20px; padding:8px 18px; cursor:pointer; background:#262a31; color:var(--text); }
 button.primary { background:var(--accent); color:#fff; }
 button:disabled { opacity:.5; cursor:default; }
@@ -33,3 +36,4 @@ td.num { color:var(--dim); width:36px; }
 td.show { width:60px; text-align:center; }
 .hint { font-size:13px; color:var(--dim); margin:8px 0 0; }
 .login { max-width:340px; margin:12vh auto; }
+.hint .ok { color:var(--ok); } .hint .err { color:var(--err); }

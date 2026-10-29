@@ -88,7 +88,7 @@ class Runner:
         # quit cleanly on SIGTERM (not on Windows, nor outside the main thread)
         with contextlib.suppress(NotImplementedError, RuntimeError, ValueError):
             self.loop.add_signal_handler(signal.SIGTERM, self.stopped.set)
-        await asyncio.to_thread(stale.stop_stale_go2rtc, paths.data_dir())
+        await asyncio.to_thread(stale.stop_stale_helpers, paths.data_dir())
         app = App(paths.data_dir())
         server = Server(app, self.frontend)
         try:
@@ -106,7 +106,7 @@ class Runner:
         try:
             await self.stopped.wait()
         finally:
-            await server.stop()
+            await server.close()
             await app.stop()
 
 

@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import io
 import os
+import tarfile
 import zipfile
 from collections.abc import Coroutine
 from pathlib import Path
@@ -43,8 +44,8 @@ async def download_binary(
 ) -> None:
     """Fetch an executable, check its hash and save it as `target`.
 
-    For a zip (a release archive or a wheel), `member` is the prefix of the
-    path inside it to extract.
+    For a zip (a release archive or a wheel) or a .tgz, `member` is the prefix
+    of the path inside it to extract.
     """
     async with session.get(url, timeout=aiohttp.ClientTimeout(total=600)) as resp:
         resp.raise_for_status()
@@ -54,7 +55,11 @@ async def download_binary(
 
     def _save() -> None:
         body = data
-        if member is not None:
+        if member is not None and data[:2] == b"\x1f\x8b":
+            with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+                info = next(m for m in tar.getmembers() if m.isfile() and m.name.startswith(member))
+                body = tar.extractfile(info).read()  # type: ignore[union-attr]
+        elif member is not None:
             with zipfile.ZipFile(io.BytesIO(data)) as archive:
                 name = next(n for n in archive.namelist() if n.startswith(member))
                 body = archive.read(name)

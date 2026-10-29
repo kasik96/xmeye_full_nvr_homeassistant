@@ -37,6 +37,34 @@ function fillForms() {
   $("#urls").textContent = status.lan_urls.length ? `On other devices open ${status.lan_urls.join(" or ")}` : "";
   $("#cams").transcode_h265.checked = s.transcode_h265;
   showCameras(status.channels);
+  const remote = $("#remote");
+  remote.tunnel.value = s.tunnel;
+  remote.tunnel_hostname.value = s.tunnel_hostname;
+  $("#token-state").textContent = status.tunnel_token ? "(saved)" : "";
+  remote.tunnel_token.placeholder = status.tunnel_token ? "saved (leave empty to keep)" : "eyJh…";
+  $("#service").textContent = `http://localhost:${s.http_port}`;
+  showOwn();
+  showTunnel();
+}
+
+function showOwn() {
+  $("#own").hidden = $("#remote").tunnel.value !== "token";
+}
+
+const TUNNEL_STATES = { starting: "Connecting to Cloudflare…", connected: "Connected", error: "Not connected" };
+
+function showTunnel() {
+  const t = status.tunnel;
+  const el = $("#tunnel-state");
+  if (t.mode === "off") {
+    el.textContent = status.settings.tunnel !== "off" && !status.settings.web_password ? "Set a web password first." : "";
+    return;
+  }
+  const esc = (x) => x.replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
+  const state = `<span class="${t.state === "connected" ? "ok" : t.state === "error" ? "err" : ""}">${TUNNEL_STATES[t.state] ?? t.state}</span>`;
+  const url = t.url ? ` · <a class="url" href="${esc(t.url)}" target="_blank" rel="noopener">${esc(t.url)}</a> <button type="button" id="copy-url">Copy</button>` : "";
+  el.innerHTML = `${state}${url}${t.error ? ` <span class="err">${esc(t.error)}</span>` : ""}`;
+  el.querySelector("#copy-url")?.addEventListener("click", () => navigator.clipboard?.writeText(t.url));
 }
 
 function showCameras(channels) {
@@ -139,6 +167,24 @@ $("#access").onsubmit = async (ev) => {
   }
 };
 
+for (const radio of document.querySelectorAll("#remote [name=tunnel]")) radio.onchange = showOwn;
+
+$("#remote").onsubmit = async (ev) => {
+  ev.preventDefault();
+  const f = $("#remote");
+  const msg = { tunnel: f.tunnel.value, tunnel_hostname: f.tunnel_hostname.value };
+  if (f.tunnel_token.value) msg.tunnel_token = f.tunnel_token.value;
+  try {
+    await call({ type: "app/save", ...msg });
+    f.tunnel_token.value = "";
+    say("#remote-msg", "Saved.", "ok");
+    await refresh();
+    fillForms();
+  } catch (err) {
+    say("#remote-msg", err.message, "err");
+  }
+};
+
 $("#autostart").onchange = async (ev) => {
   try {
     await call({ type: "app/autostart", enabled: ev.target.checked });
@@ -152,6 +198,8 @@ await refresh();
 fillForms();
 setInterval(async () => {
   const before = status.connected;
+  const tunnelBefore = JSON.stringify(status.tunnel);
   await refresh();
   if (status.connected !== before) fillForms();
+  else if (JSON.stringify(status.tunnel) !== tunnelBefore) showTunnel();
 }, 5000);

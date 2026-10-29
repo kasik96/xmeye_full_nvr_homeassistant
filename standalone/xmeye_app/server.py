@@ -5,6 +5,11 @@ Access: by default the server listens on localhost only. With LAN access on it
 listens on all interfaces and asks everyone except this computer for the
 web password. Requests must name this computer in their Host header (against
 DNS rebinding) and WebSockets and POSTs must come from this origin.
+
+With a Cloudflare tunnel on, cloudflared forwards requests from the internet
+to localhost. They carry Cloudflare's headers and are always treated as
+remote: they need the web password, and live video goes over HLS because
+WebRTC cannot pass the tunnel.
 """
 
 from __future__ import annotations
@@ -12,11 +17,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import secrets
 import socket
+import time
 from typing import Any
 from urllib.parse import urlsplit
 
+import aiohttp
 from aiohttp import WSMsgType, web
 import voluptuous as vol
 
@@ -27,9 +35,10 @@ from xmeye_core.util import background
 
 from . import APP_NAME, __version__, autostart
 from .app import App
-from .live import WebRTCSession
+from .live import API_PORT, WebRTCSession
 from .paths import resource
 from .settings import check_password, hash_password
+from .tunnel import Tunnel, TunnelConfig
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -39,6 +48,12 @@ LOOPBACK_NAMES = {"localhost", "127.0.0.1", "::1"}
 # reachable without logging in (the HLS token is its own authorization)
 PUBLIC = ("/login", "/app/app.css", "/panel/logo.png", "/api/ping", "/api/xmeye/hls/")
 COMMANDS_BY_TYPE = {f"xmeye/{c.name}": c for c in COMMANDS}
+CLOUDFLARE_HEADERS = ("Cf-Connecting-IP", "Cf-Ray", "Cf-Visitor")
+# wrong web passwords per client before it has to wait
+LOGIN_TRIES = 10
+LOGIN_WINDOW = 15 * 60
+# what go2rtc's HLS serves: the master playlist, then hls/playlist.m3u8 and segments
+LIVE_FILES = re.compile(r"stream\.m3u8|hls/[A-Za-z0-9_]+\.(m3u8|ts|mp4|m4s)")
 
 
 class Server:
@@ -50,6 +65,9 @@ class Server:
         self.port = 0
         self._runner: web.AppRunner | None = None
         self._sockets: set[web.WebSocketResponse] = set()
+        self._failures: dict[str, list[float]] = {}
+        self.tunnel = Tunnel(app.bin_dir)
+        self.has_tunnel_token = False
 
     # --- lifecycle -----------------------------------------------------------
 
@@ -65,6 +83,7 @@ class Server:
         wapp.router.add_get("/api/xmeye/hls/{token}/{name}", self._hls)
         wapp.router.add_get("/api/xmeye/thumb/{entry_id}/{channel}/{stamp}", self._thumb)
         wapp.router.add_get("/api/snapshot/{entity_id}", self._snapshot)
+        wapp.router.add_get("/api/live/{stream}/{file:.+}", self._live)
         wapp.router.add_static("/panel", self.frontend)
         wapp.router.add_static("/app", self.web)
         return wapp
@@ -89,6 +108,7 @@ class Server:
             await asyncio.to_thread(self.app.config.save)
         self.port = port
         _LOGGER.info("Listening on %s port %d", "all interfaces" if s.lan else "localhost", self.port)
+        await self.apply_tunnel()
 
     async def stop(self) -> None:
         # open tabs would hold up the shutdown; they reconnect by themselves
@@ -98,6 +118,21 @@ class Server:
             await self._runner.cleanup()
             self._runner = None
 
+    async def close(self) -> None:
+        await self.stop()
+        await self.tunnel.stop()
+
+    async def apply_tunnel(self) -> None:
+        s = self.app.settings
+        mode = s.tunnel if s.web_password else "off"
+        token = ""
+        if mode == "token":
+            token = await asyncio.to_thread(self.app.config.tunnel_token)
+        self.has_tunnel_token = bool(token)
+        if mode == "token" and not token:
+            mode = "off"
+        await self.tunnel.apply(TunnelConfig(mode, self.port, token, s.tunnel_hostname))
+
     async def restart_later(self) -> None:
         """Rebind after the settings changed (the reply is sent first)."""
         await asyncio.sleep(0.5)
@@ -106,17 +141,39 @@ class Server:
 
     # --- access --------------------------------------------------------------
 
+    @staticmethod
+    def via_tunnel(request: web.Request) -> bool:
+        return any(h in request.headers for h in CLOUDFLARE_HEADERS)
+
     def _local(self, request: web.Request) -> bool:
+        if self.via_tunnel(request):
+            return False
         hostname = urlsplit(f"//{request.host}").hostname or ""
         remote = request.remote or ""
         return hostname in LOOPBACK_NAMES and remote in ("127.0.0.1", "::1")
+
+    def _allowed_remote(self, request: web.Request) -> bool:
+        s = self.app.settings
+        if not s.web_password:
+            return False
+        if s.lan:
+            return True
+        # cloudflared runs on this computer
+        return (
+            s.tunnel != "off"
+            and self.via_tunnel(request)
+            and (request.remote or "") in ("127.0.0.1", "::1")
+        )
+
+    def _client(self, request: web.Request) -> str:
+        return request.headers.get("Cf-Connecting-IP") or request.remote or ""
 
     @web.middleware
     async def _guard(self, request: web.Request, handler) -> web.StreamResponse:
         # Only requests to localhost from this computer skip the login. A page
         # elsewhere that rebinds its own name to 127.0.0.1 still needs it.
         local = self._local(request)
-        if not local and not (self.app.settings.lan and self.app.settings.web_password):
+        if not local and not self._allowed_remote(request):
             raise web.HTTPForbidden(text="Open it on this computer, or turn on network access.")
         origin = request.headers.get("Origin")
         if (request.method != "GET" or request.path == "/api/websocket") and origin:
@@ -137,13 +194,28 @@ class Server:
     async def _login(self, request: web.Request) -> web.StreamResponse:
         form = await request.post()
         stored = self.app.settings.web_password
+        client = self._client(request)
+        now = time.monotonic()
+        failures = [t for t in self._failures.get(client, []) if now - t < LOGIN_WINDOW]
+        if len(failures) >= LOGIN_TRIES:
+            await asyncio.sleep(1)
+            raise web.HTTPFound("/login?wrong=many")
         if not stored or not check_password(str(form.get("password", "")), stored):
+            self._failures[client] = [*failures, now]
             await asyncio.sleep(1)
             raise web.HTTPFound("/login?wrong=1")
+        self._failures.pop(client, None)
         token = secrets.token_urlsafe(32)
         self.sessions.add(token)
         response = web.HTTPFound("/")
-        response.set_cookie(COOKIE, token, httponly=True, samesite="Strict", max_age=30 * 86400)
+        response.set_cookie(
+            COOKIE,
+            token,
+            httponly=True,
+            samesite="Strict",
+            secure=self.via_tunnel(request),
+            max_age=30 * 86400,
+        )
         raise response
 
     async def _logout(self, request: web.Request) -> web.StreamResponse:
@@ -186,12 +258,35 @@ class Server:
             raise web.HTTPNotFound
         return web.Response(body=image, content_type="image/jpeg", headers={"Cache-Control": "no-cache"})
 
+    async def _live(self, request: web.Request) -> web.StreamResponse:
+        """go2rtc's HLS (fMP4, so H.265 too) for live video through the tunnel."""
+        stream, name = request.match_info["stream"], request.match_info["file"]
+        if stream not in self.app.streams.values() or not LIVE_FILES.fullmatch(name):
+            raise web.HTTPNotFound
+        params = dict(request.query)
+        if name == "stream.m3u8":
+            params.update(src=stream, mp4="")
+        assert self.app.session
+        try:
+            async with self.app.session.get(
+                f"http://127.0.0.1:{API_PORT}/api/{name}",
+                params=params,
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status != 200:
+                    raise web.HTTPNotFound
+                body = await resp.read()
+                kind = resp.headers.get("Content-Type", "application/octet-stream")
+        except (aiohttp.ClientError, TimeoutError) as err:
+            raise web.HTTPServiceUnavailable from err
+        return web.Response(body=body, headers={"Content-Type": kind, "Cache-Control": "no-cache"})
+
     # --- WebSocket -----------------------------------------------------------
 
     async def _websocket(self, request: web.Request) -> web.WebSocketResponse:
         ws = web.WebSocketResponse(heartbeat=30, max_msg_size=1 << 20)
         await ws.prepare(request)
-        conn = Connection(self, ws)
+        conn = Connection(self, ws, self.via_tunnel(request))
         self._sockets.add(ws)
         try:
             async for msg in ws:
@@ -228,8 +323,10 @@ class Server:
 class Connection:
     """One browser tab."""
 
-    def __init__(self, server: Server, ws: web.WebSocketResponse) -> None:
+    def __init__(self, server: Server, ws: web.WebSocketResponse, remote: bool) -> None:
         self.server = server
+        # through the Cloudflare tunnel, where WebRTC cannot go
+        self.remote = remote
         self.app = server.app
         self.ws = ws
         self.webrtc: dict[int, WebRTCSession] = {}  # subscription id → session
@@ -263,7 +360,14 @@ class Connection:
             elif kind == "camera/webrtc/get_client_config":
                 await self.result(msg_id, {"configuration": {"iceServers": []}})
             elif kind == "camera/webrtc/offer":
+                if self.remote:
+                    raise APIError("WebRTC does not pass the tunnel, using HLS")
                 await self._webrtc_offer(msg_id, msg)
+            elif kind == "camera/stream":
+                stream = self.app.streams.get(str(msg.get("entity_id")))
+                if not stream:
+                    raise APIError("unknown camera")
+                await self.result(msg_id, {"url": f"/api/live/{stream}/stream.m3u8"})
             elif kind == "camera/webrtc/candidate":
                 session = self.webrtc.get(self._session_ids.get(str(msg.get("session_id")), -1))
                 if session:
@@ -335,6 +439,8 @@ class Connection:
                 "model": nvr.model if nvr else None,
                 "autostart": await asyncio.to_thread(autostart.is_enabled),
                 "lan_urls": self.server.lan_urls() if s.lan else [],
+                "tunnel": self.server.tunnel.status(),
+                "tunnel_token": self.server.has_tunnel_token,
             }
         if name == "test":
             return await app.test(
@@ -374,6 +480,24 @@ class Connection:
             if msg["lan"] and not s.web_password:
                 raise APIError("Set a web password before turning on network access.")
             s.lan = bool(msg["lan"])
+        tunnel_before = (s.tunnel, s.tunnel_hostname)
+        if "tunnel" in msg:
+            mode = str(msg["tunnel"])
+            if mode not in ("off", "quick", "token"):
+                raise APIError("Unknown tunnel kind.")
+            if mode != "off" and not s.web_password:
+                raise APIError("Set a web password before turning on remote access.")
+            if mode == "token" and not (msg.get("tunnel_token") or self.server.has_tunnel_token):
+                raise APIError("Paste the tunnel token from the Cloudflare dashboard.")
+            s.tunnel = mode
+        if "tunnel_hostname" in msg:
+            host = str(msg["tunnel_hostname"]).strip().removeprefix("https://").strip("/")
+            if host and not re.fullmatch(r"[A-Za-z0-9.-]+", host):
+                raise APIError("The hostname looks wrong, e.g. cameras.example.com")
+            s.tunnel_hostname = host
+        if msg.get("tunnel_token"):
+            await asyncio.to_thread(app.config.set_tunnel_token, str(msg["tunnel_token"]).strip())
+            tunnel_before = ()
         if "http_port" in msg:
             port = int(msg["http_port"])
             if not 1024 <= port <= 65535:
@@ -385,6 +509,8 @@ class Connection:
         restart = (s.lan, s.http_port) != listen_before
         if restart:
             background(self.server.restart_later(), "xmeye rebind")
+        elif (s.tunnel, s.tunnel_hostname) != tunnel_before:
+            await self.server.apply_tunnel()
         return {"restart": restart, "port": s.http_port}
 
     async def close(self) -> None:

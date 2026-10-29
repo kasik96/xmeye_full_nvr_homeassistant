@@ -115,6 +115,25 @@ phone or tablet (`http://<computer's IP>:18765`). Other devices log in with that
 Windows asks whether go2rtc and the app may use the network, allow *private networks*: live video
 uses port 18556 (TCP and UDP).
 
+**Away from home.** Settings → *Remote access* runs a
+[Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/):
+cloudflared connects out to Cloudflare, so nothing is opened on the router. It needs the web password
+(set it under *Access*), and everyone who comes through the tunnel logs in with it; after 10 wrong
+passwords an address has to wait 15 minutes.
+
+- *Quick tunnel*: no Cloudflare account. The app shows a random `https://….trycloudflare.com` address,
+  which changes every time the app starts.
+- *My Cloudflare tunnel*: a fixed address on a domain you have in Cloudflare. In the dashboard:
+  Zero Trust → Networks → Tunnels → *Create a tunnel* (cloudflared), copy the token from the install
+  command, and add a public hostname (e.g. `cameras.example.com`) with the service
+  `http://localhost:18765`. Paste the token and the hostname into the app. The token is kept in the
+  keychain. You can also put
+  [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/applications/) in front of it.
+
+WebRTC cannot pass the tunnel, so live video through it is HLS from go2rtc: a few seconds behind.
+The first use downloads cloudflared 2026.10.0 from GitHub (pinned, checked by SHA-256), unless
+`cloudflared` is on the PATH.
+
 **The file is not signed.** Windows SmartScreen says *Windows protected your PC*: click
 *More info → Run anyway*. macOS says the app cannot be checked: open *System Settings → Privacy &
 Security* and click *Open Anyway*. The app is built from this repository by
