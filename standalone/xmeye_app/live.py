@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,12 @@ RTSP_PORT = 18555
 WEBRTC_PORT = 18556
 RESPAWN = 5
 CHECK = 60
+# go2rtc logs source URLs; the NVR's RTSP URL carries the password
+SECRETS = re.compile(r"(password=)[^&\s\"]*|(://[^:/@\s]+:)[^@\s]*(@)", re.I)
+
+
+def redact(text: str) -> str:
+    return SECRETS.sub(lambda m: f"{m[1]}***" if m[1] else f"{m[2]}***{m[3]}", text)
 
 
 class LiveServer:
@@ -81,7 +88,7 @@ class LiveServer:
             assert self._proc.stdout
             try:
                 async for line in self._proc.stdout:
-                    text = line.decode(errors="replace").rstrip()
+                    text = redact(line.decode(errors="replace").rstrip())
                     if " ERR " in text or " WRN " in text:
                         _LOGGER.warning("go2rtc: %s", text)
                     else:
