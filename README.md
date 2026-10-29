@@ -19,6 +19,14 @@ One integration for a Xiongmai / XMeye NVR:
 * **Recordings stay on the NVR.** Nothing is recorded into Home Assistant. A sidebar
   panel shows them on a timeline with motion events and thumbnails and plays them on demand.
 
+![Live grid with the newest motion events](docs/screenshots/grid.jpg)
+
+| Playback with timeline and events | NVR and HomeKit settings |
+| --- | --- |
+| ![Single camera playing a recording](docs/screenshots/single.jpg) | ![Settings](docs/screenshots/settings.jpg) |
+
+<sub>Camera images are blurred for privacy.</sub>
+
 Talks the NVR's own DVRIP protocol (port 34567, what the XMeye app uses) for recordings
 and its RTSP server (port 554) for live video. Tested on an NBD88X16S-KL-V3 NVR,
 firmware V4.03.R11, with H.264 and H.265 cameras, on Home Assistant OS 2026.10.

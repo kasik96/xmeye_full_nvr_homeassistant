@@ -35,6 +35,7 @@ from .const import (
     DEFAULT_TRANSCODE_H265,
     DOMAIN,
     EVENT_MERGE_GAP,
+    FILE_TAIL,
     MOTION_FILE_MAX,
 )
 from .alarm import AlarmListener
@@ -146,8 +147,15 @@ class XMeyeData:
         candidates: list[Recording] = []
         for day in (when.date() - timedelta(days=1), when.date()):
             candidates += await self.recordings(channel, day)
-        for rec in candidates:
+        for i, rec in enumerate(candidates):
             if rec.begin <= when < rec.end:
+                after = candidates[i + 1] if i + 1 < len(candidates) else None
+                if (
+                    after
+                    and rec.end - when < FILE_TAIL
+                    and after.begin - rec.end < FILE_TAIL
+                ):
+                    return after
                 return rec
         for rec in candidates:
             if rec.begin > when and rec.begin.date() == when.date():

@@ -27,6 +27,8 @@ CACHE_PAST = 600
 EVENT_MERGE_GAP = timedelta(seconds=5)
 # Longer [M] files are continuous recording, not a motion clip
 MOTION_FILE_MAX = 600
+# a start this close to the end of a file has no key frame left: use the next file
+FILE_TAIL = timedelta(seconds=10)
 
 # Event thumbnails
 THUMB_CACHE = 800
