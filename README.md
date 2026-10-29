@@ -1,5 +1,9 @@
 # XMeye Full NVR for Home Assistant
 
+[![HACS](https://img.shields.io/badge/HACS-Default-41BDF5.svg)](https://hacs.xyz)
+[![Validate](https://github.com/kasik96/xmeye_full_nvr_homeassistant/actions/workflows/validate.yml/badge.svg)](https://github.com/kasik96/xmeye_full_nvr_homeassistant/actions/workflows/validate.yml)
+[![Buy me a beer](https://img.shields.io/badge/Buy%20me%20a%20beer-FF813F?logo=buymeacoffee&logoColor=white)](https://www.buymeacoffee.com/kasik96)
+
 <img src="custom_components/xmeye/brand/icon.png" width="96" align="right" alt="">
 
 One integration for a Xiongmai / XMeye NVR:
@@ -45,8 +49,9 @@ The panel works on phones too. The event list moves below the player.
 
 ## Install
 
-1. Copy `custom_components/xmeye` to `<config>/custom_components/`, or add this repository
-   to HACS as a custom repository (category *Integration*).
+1. **HACS:** search for *XMeye Full NVR* and download it. Until it is in the HACS default list,
+   add this repository as a custom repository (category *Integration*) first.
+   **Manually:** copy `custom_components/xmeye` to `<config>/custom_components/`.
 2. Restart Home Assistant, then **Settings → Devices & services → Add integration → XMeye NVR**.
 3. Enter the NVR's host, the DVRIP port (34567), the RTSP port (554), user and password.
    The password is stored only in the config entry.
@@ -156,6 +161,11 @@ format) for every download. It has no RTSP server, so live tiles stay empty.
 * Fast playback is limited by the NVR's download speed (see above).
 * Only H.264 has been tested. The H.265 path (copy with `hvc1` tag, or libx264
   transcode) is untested.
+
+## Support
+
+The integration is free. If it saves you time, you can
+[buy me a beer](https://www.buymeacoffee.com/kasik96). Thank you!
 
 ## Third-party code
 
