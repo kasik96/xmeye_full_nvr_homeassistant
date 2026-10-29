@@ -23,11 +23,13 @@ if TYPE_CHECKING:
 
 @dataclass
 class Event:
-    """Motion: adjacent motion files merged."""
+    """Motion: adjacent alarms and motion files merged."""
 
     channel: int
     begin: datetime
     end: datetime
+    # what the NVR detected: motion, person, face, vehicle, covered
+    kinds: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -99,9 +101,7 @@ class XMeyeData:
         """
         day_begin = datetime.combine(day, time.min)
         day_end = datetime.combine(day, time.max)
-        periods = [
-            (b, e) for b, e, kind in self.alarms.periods(channel, day_begin, day_end)
-        ]
+        periods = self.alarms.periods(channel, day_begin, day_end)
         live_since = self.alarms.history_start or datetime.max
         for rec in await self.recordings(channel, day):
             if (
@@ -109,13 +109,14 @@ class XMeyeData:
                 and rec.duration <= MOTION_FILE_MAX
                 and rec.begin < live_since
             ):
-                periods.append((rec.begin, rec.end))
+                periods.append((rec.begin, rec.end, "motion"))
         events: list[Event] = []
-        for begin, end in sorted(periods):
+        for begin, end, kind in sorted(periods):
             if events and begin - events[-1].end <= EVENT_MERGE_GAP:
                 events[-1].end = max(events[-1].end, end)
+                events[-1].kinds.add(kind)
             else:
-                events.append(Event(channel, begin, end))
+                events.append(Event(channel, begin, end, {kind}))
         return events
 
     async def recording_at(self, channel: int, when: datetime) -> Recording | None:
@@ -190,4 +191,5 @@ def as_dict(item: Recording | Event) -> dict[str, Any]:
         out["kind"] = item.kind
     else:
         out["channel"] = item.channel + 1
+        out["kinds"] = sorted(item.kinds)
     return out

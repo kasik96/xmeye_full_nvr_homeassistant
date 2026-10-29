@@ -31,12 +31,22 @@ RETRY = 30
 KEEP_DAYS = 14
 SAVE_DELAY = 30
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
-# NVR event names → our kinds
-KINDS = {
-    "VideoMotion": "motion",
-    "appEventHumanDetectAlarm": "person",
-    "HumanDetect": "person",
-}
+# Our kinds by words in the NVR's event names: VideoMotion, HumanDetect,
+# appEventHumanDetectAlarm, VideoBlind, and the face and vehicle variants.
+KIND_WORDS = (
+    ("human", "person"),
+    ("face", "face"),
+    ("carshape", "vehicle"),
+    ("vehicle", "vehicle"),
+    ("blind", "covered"),
+    ("motion", "motion"),
+)
+KINDS = ("motion", "person", "face", "vehicle", "covered")
+
+
+def kind_of(event: str) -> str | None:
+    name = event.lower()
+    return next((kind for word, kind in KIND_WORDS if word in name), None)
 
 
 class AlarmListener:
@@ -141,7 +151,7 @@ class AlarmListener:
         except ValueError:
             return
         _LOGGER.debug("Alarm %s", info)
-        kind = KINDS.get(info.get("Event", ""))
+        kind = kind_of(str(info.get("Event", "")))
         if kind is None:
             return
         try:

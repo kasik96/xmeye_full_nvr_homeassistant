@@ -367,7 +367,6 @@ export class NvrSettings {
               F("Decoder.0.UserName", "User"),
               F("Decoder.0.PassWord", "Password", "password", { hint: "•••• keeps the current one" }),
               F("Decoder.0.StreamType", "Stream", "select", { options: [["MAIN", "Main"], ["SUB", "Sub"]] }),
-              F("Decoder.0.Enable", "Use this camera", "bool"),
             ]
           : []),
       ];

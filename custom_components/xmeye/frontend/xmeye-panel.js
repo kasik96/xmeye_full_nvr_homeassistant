@@ -11,6 +11,15 @@ const GRID_LAYOUTS = [
   ["2", "2", "Two columns"],
 ];
 const MIN_SPAN = 300;
+// event filter: kind, chip label, label in "No … in the last 24 hours", badge
+const KINDS = [
+  ["all", "All", "events", ""],
+  ["motion", "Motion", "motion", "Motion"],
+  ["person", "People", "people", "Person"],
+  ["face", "Faces", "faces", "Face"],
+  ["vehicle", "Vehicles", "vehicles", "Vehicle"],
+  ["covered", "Covered", "covered cameras", "Covered"],
+];
 
 const css = `
 :host { display:block; height:100%; background:#0f1012; color:#e8e8ea;
@@ -111,6 +120,11 @@ aside { width:340px; flex:none; border-left:1px solid #1f2125; display:flex; fle
 .item .th { flex:1; aspect-ratio:16/9; border-radius:8px; background:#1b1d21; overflow:hidden; }
 .item .th img { width:100%; height:100%; object-fit:cover; display:block; }
 .empty { color:#777; font-size:13px; padding:16px; }
+.kinds { overflow-x:auto; scrollbar-width:none; max-width:100%; }
+.kinds::-webkit-scrollbar { display:none; }
+.list .kinds { margin:2px 0 6px; align-self:flex-start; }
+.ev .badge { position:absolute; left:6px; top:5px; font-size:10px; padding:1px 6px; border-radius:8px;
+  background:#2d6cdfcc; color:#fff; }
 .kind { display:inline-block; font-size:10px; padding:1px 6px; border-radius:8px; background:#2d6cdf33; color:#9cf; margin-top:4px; }
 .settings { max-width:1100px; margin:0 auto; padding:8px 16px 32px; }
 .card { background:#16181b; border-radius:12px; padding:14px 16px; margin:12px 0; }
@@ -122,8 +136,11 @@ aside { width:340px; flex:none; border-left:1px solid #1f2125; display:flex; fle
 table { width:100%; border-collapse:collapse; font-size:13px; }
 th { text-align:left; color:#8a93a3; font-weight:400; padding:6px 8px; white-space:nowrap; }
 td { padding:8px; border-top:1px solid #22252a; vertical-align:middle; }
-select.hkstream { padding:2px 4px; font-size:12px; }
-.fast { white-space:nowrap; cursor:pointer; } .fast input { vertical-align:middle; margin:0 2px 0 0; }
+.hkbox { display:flex; flex-direction:column; gap:6px; min-width:210px; }
+.hkrow { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.hkrow select.hkstream { padding:4px 6px; font-size:12px; width:auto; flex:none; }
+.fast { white-space:nowrap; cursor:pointer; display:inline-flex; align-items:center; gap:4px; }
+.fast input { margin:0; accent-color:#2d6cdf; }
 td select { background:#1f2226; color:#e8e8ea; border:0; border-radius:6px; padding:5px 6px; font:inherit; }
 .pin { font-family:ui-monospace,monospace; font-size:14px; letter-spacing:1px; }
 .ok { color:#4ade80; } .muted { color:#888; } .err { color:#f87171; }
@@ -141,7 +158,8 @@ td select { background:#1f2226; color:#e8e8ea; border:0; border-radius:6px; padd
   td { border:0; padding:8px 0; display:flex; align-items:center; justify-content:space-between; gap:12px; }
   td.name { font-size:16px; font-weight:500; border-bottom:1px solid #2a2e34; }
   td[data-label]::before { content:attr(data-label); color:#8a93a3; }
-  td.hk { flex-wrap:wrap; }
+  td.hk { align-items:flex-start; }
+  .hkbox { align-items:flex-end; min-width:0; } .hkrow { justify-content:flex-end; }
   .stats { gap:14px; } .stats b { font-size:17px; }
 }
 .live { position:absolute; right:12px; top:12px; background:#000a; color:#fff; border:1px solid #fff6;
@@ -380,6 +398,7 @@ class XMeyePanel extends HTMLElement {
     this.muted = true;
     this.speed = 1;
     this.tab = "events";
+    this.kind = "all";
     // grid layout: "fit" (all cameras on screen), "1" or "2" columns
     this.layout = "fit";
     try {
@@ -492,7 +511,7 @@ class XMeyePanel extends HTMLElement {
     const app = this.shadowRoot.querySelector(".app");
     app.innerHTML = `${this.header()}
       <main class="${this.layout === "fit" ? "" : "scroll"}"><div class="gridview ${this.layout === "fit" ? "" : "flow"}">
-        <h2>Events</h2><div class="strip"></div>
+        <div class="camhead"><h2>Events</h2>${this.kindsHtml()}</div><div class="strip"></div>
         <div class="camhead"><h2>Cameras</h2>
           <div class="seg small-seg">${GRID_LAYOUTS.map(([v, label, title]) => `<button data-layout="${v}" title="${title}" class="${this.layout === v ? "on" : ""}">${label}</button>`).join("")}</div>
         </div>
@@ -525,6 +544,7 @@ class XMeyePanel extends HTMLElement {
       if (entity && !document.hidden) this.live.set(`grid-${entity}`, new LiveStream(this.hass, entity, video));
     });
     this.renderStrip();
+    this.bindKinds(app.querySelector(".camhead"), () => this.renderStrip());
     app.querySelectorAll("[data-layout]").forEach((b) =>
       b.addEventListener("click", () => {
         this.layout = b.dataset.layout;
@@ -572,7 +592,7 @@ class XMeyePanel extends HTMLElement {
 
   async refreshEvents() {
     try {
-      const res = await this.hass.connection.sendMessagePromise({ type: "xmeye/events", hours: 24, limit: 40 });
+      const res = await this.hass.connection.sendMessagePromise({ type: "xmeye/events", hours: 24, limit: 150 });
       this.events = res.events;
     } catch (err) {
       return;
@@ -584,23 +604,52 @@ class XMeyePanel extends HTMLElement {
     return this.cameras.findIndex((c) => c.entry_id === ev.entry_id && c.channel === ev.channel);
   }
 
+  kindsHtml() {
+    return `<div class="seg small-seg kinds">${KINDS.map(([k, label]) => `<button data-kind="${k}" class="${this.kind === k ? "on" : ""}">${label}</button>`).join("")}</div>`;
+  }
+
+  bindKinds(root, render) {
+    root.querySelectorAll("[data-kind]").forEach((b) =>
+      b.addEventListener("click", () => {
+        this.kind = b.dataset.kind;
+        this.shadowRoot.querySelectorAll("[data-kind]").forEach((x) => x.classList.toggle("on", x.dataset.kind === this.kind));
+        render();
+      })
+    );
+  }
+
+  ofKind(events) {
+    return this.kind === "all" ? events : events.filter((ev) => ev.kinds?.includes(this.kind));
+  }
+
+  noEvents(when) {
+    return `<div class="empty">No ${KINDS.find(([k]) => k === this.kind)[2]} ${when}.</div>`;
+  }
+
+  /** What was detected besides plain motion, for a badge. */
+  badge(ev) {
+    return KINDS.filter(([k]) => k !== "motion" && ev.kinds?.includes(k)).map((k) => k[3]).join(" · ");
+  }
+
   renderStrip() {
     const strip = this.shadowRoot.querySelector(".strip");
     if (!strip) return;
-    if (!this.events.length) {
-      strip.innerHTML = `<div class="empty">No motion in the last 24 hours.</div>`;
+    const events = this.ofKind(this.events);
+    if (!events.length) {
+      strip.innerHTML = this.noEvents("in the last 24 hours");
       return;
     }
-    strip.innerHTML = this.events
+    strip.innerHTML = events
       .map((ev, i) => {
         const cam = this.cameras[this.camIndex(ev)];
-        return `<div class="ev" data-i="${i}"><div class="th"><img alt="" data-thumb="${this.thumbUrl(ev.entry_id, ev.channel, ev.begin)}"><span class="cam">${cam?.name ?? ""}</span></div>
+        const badge = this.badge(ev);
+        return `<div class="ev" data-i="${i}"><div class="th"><img alt="" data-thumb="${this.thumbUrl(ev.entry_id, ev.channel, ev.begin)}">${badge ? `<span class="badge">${badge}</span>` : ""}<span class="cam">${cam?.name ?? ""}</span></div>
           <div class="t">${this.fmtTime(ev.begin)}</div></div>`;
       })
       .join("");
     strip.querySelectorAll(".ev").forEach((el) =>
       el.addEventListener("click", () => {
-        const ev = this.events[el.dataset.i];
+        const ev = events[el.dataset.i];
         const i = this.camIndex(ev);
         if (i >= 0) this.openCamera(i, ev.begin);
       })
@@ -740,13 +789,14 @@ class XMeyePanel extends HTMLElement {
               <td data-label="Recording"><select data-set="record">${mode === "manual" ? opt("manual", "Always (manual)") : ""}${opt("always", "Always")}${opt("motion", "Motion only")}${opt("off", "Off")}</select></td>
               <td data-label="Motion detection"><span class="switch ${motion.Enable ? "on" : ""}" data-set="motion_enabled" role="switch"></span></td>
               <td data-label="Sensitivity"><select data-set="motion_level">${[1, 2, 3, 4, 5, 6].map((l) => `<option ${l === motion.Level ? "selected" : ""}>${l}</option>`).join("")}</select></td>
-              <td class="hk" data-label="HomeKit">${h ? `<span class="switch ${h.enabled ? "on" : ""}" data-hk="${h.key}" role="switch"></span>
-                ${h.enabled ? `<div class="small">${h.paired ? `<span class="ok">Paired</span> · <button class="btn" data-hkreset="${h.key}">Unpair</button>` : `Code <span class="pin">${h.pin}</span>`}
-                  · <select class="hkstream" data-hkstream="${h.key}" title="Main: full resolution (H.265 cameras are converted to 1080p H.264). Sub: no conversion, lower resolution.">
+              <td class="hk" data-label="HomeKit">${h ? `<div class="hkbox">
+                <div class="hkrow"><span class="switch ${h.enabled ? "on" : ""}" data-hk="${h.key}" role="switch"></span>
+                ${h.enabled ? (h.paired ? `<span class="ok small">Paired</span><button class="btn" data-hkreset="${h.key}">Unpair</button>` : `<span class="small">Code <span class="pin">${h.pin}</span></span>`) : ""}</div>
+                ${h.enabled ? `<div class="hkrow"><select class="hkstream" data-hkstream="${h.key}" title="Main: full resolution (H.265 cameras are converted to 1080p H.264). Sub: no conversion, lower resolution.">
                     <option value="main" ${h.stream !== "sub" ? "selected" : ""}>Main stream</option>
                     <option value="sub" ${h.stream === "sub" ? "selected" : ""}>Sub stream</option></select>
-                  · <label class="fast" title="Keep the stream running so it opens in Apple Home in a second or two. Uses CPU all the time for H.265 cameras (transcoding).">
-                    <input type="checkbox" data-hkpreload="${h.key}" ${h.preload ? "checked" : ""}> Fast start</label></div>` : ""}` : `<span class="muted">—</span>`}</td>
+                  <label class="fast small" title="Keep the stream running so it opens in Apple Home in a second or two. Uses CPU all the time for H.265 cameras (transcoding).">
+                    <input type="checkbox" data-hkpreload="${h.key}" ${h.preload ? "checked" : ""}>Fast start</label></div>` : ""}</div>` : `<span class="muted">—</span>`}</td>
             </tr>`;
           })
           .join("")}
@@ -1001,18 +1051,20 @@ class XMeyePanel extends HTMLElement {
     if (!list) return;
     const cam = this.cameras[this.current];
     const recordings = this.tab === "recordings";
-    const items = recordings ? this.recordingBlocks() : this.day?.events ?? [];
-    list.innerHTML = items.length
+    const items = recordings ? this.recordingBlocks() : this.ofKind(this.day?.events ?? []);
+    const label = (ev) => (recordings ? (ev.kind !== "regular" ? ev.kind : "") : this.badge(ev));
+    list.innerHTML = (recordings ? "" : this.kindsHtml()) + (items.length
       ? items
           .map(
             (ev, i) => `<div class="item" data-i="${i}">
               <div class="meta"><div>${this.fmtTime(ev.begin)}${recordings ? `–${this.fmtTime(ev.end)}` : ""}</div><div>${dur(ev.begin, ev.end)}</div>
-              ${recordings && ev.kind !== "regular" ? `<span class="kind">${ev.kind}</span>` : ""}</div>
+              ${label(ev) ? `<span class="kind">${label(ev)}</span>` : ""}</div>
               <div class="th"><img alt="" data-thumb="${this.thumbUrl(cam.entry_id, cam.channel, ev.begin)}"></div>
             </div>`
           )
           .join("")
-      : `<div class="empty">${recordings ? "No recordings" : "No motion"} on ${dayLabel(this.date)}.</div>`;
+      : recordings ? `<div class="empty">No recordings on ${dayLabel(this.date)}.</div>` : this.noEvents(`on ${dayLabel(this.date)}`));
+    this.bindKinds(list, () => this.renderEvents());
     list.querySelectorAll(".item").forEach((el) =>
       el.addEventListener("click", () => this.play(items[el.dataset.i].begin))
     );

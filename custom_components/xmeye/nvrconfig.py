@@ -194,7 +194,16 @@ async def titles_set(svc: Services, msg: dict[str, Any]) -> Any:
             raise APIError("unknown channel")
         titles[channel - 1] = name.strip()
     await _request(client, MSG_TITLE_SET, "ChannelTitle", titles)
-    return await client.channel_titles()
+    stored = await client.channel_titles()
+    # The NVR answers OK but keeps the old name of a camera that is offline.
+    kept = [ch for ch, name in msg["titles"].items() if stored[ch - 1] != name.strip()]
+    if kept:
+        channels = ", ".join(str(ch) for ch in kept)
+        raise APIError(
+            f"The NVR kept the old name of channel {channels}. It renames a camera "
+            "only while the camera is online."
+        )
+    return stored
 
 
 @command("time", {vol.Required("entry_id"): str}, admin=True)
