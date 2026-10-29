@@ -12,6 +12,7 @@ from typing import Any
 from aiohttp import web
 import voluptuous as vol
 
+from .alarm import KINDS
 from .dvrip import FRAME_I, FRAME_P, DVRIPError, FrameParser, stamp_seconds
 from .homekit import HomeKitManager
 from .nvr import XMeyeData, as_dict
@@ -120,10 +121,13 @@ async def day(svc: Services, msg: dict[str, Any]) -> Any:
     {
         vol.Optional("hours", default=24): vol.All(int, vol.Range(min=1, max=72)),
         vol.Optional("limit", default=40): vol.All(int, vol.Range(min=1, max=500)),
+        # only events where the NVR detected this
+        vol.Optional("kind"): vol.In(KINDS),
     },
 )
 async def events(svc: Services, msg: dict[str, Any]) -> Any:
     """Recent motion events of all cameras, newest first."""
+    kind = msg.get("kind")
     now = svc.now()
     since = now - timedelta(hours=msg["hours"])
     days = sorted({since.date(), now.date()})
@@ -136,7 +140,9 @@ async def events(svc: Services, msg: dict[str, Any]) -> Any:
                 except DVRIPError:
                     continue
                 found_all += [
-                    {**as_dict(e), "entry_id": entry_id} for e in found if e.end >= since
+                    {**as_dict(e), "entry_id": entry_id}
+                    for e in found
+                    if e.end >= since and (kind is None or kind in e.kinds)
                 ]
     found_all.sort(key=lambda e: e["begin"], reverse=True)
     return {"events": found_all[: msg["limit"]]}

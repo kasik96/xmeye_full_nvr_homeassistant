@@ -545,7 +545,7 @@ class XMeyePanel extends HTMLElement {
       if (entity && !document.hidden) this.live.set(`grid-${entity}`, new LiveStream(this.hass, entity, video));
     });
     this.renderStrip();
-    this.bindKinds(app.querySelector(".camhead"), () => this.renderStrip());
+    this.bindKinds(app.querySelector(".camhead"), () => this.refreshEvents());
     app.querySelectorAll("[data-layout]").forEach((b) =>
       b.addEventListener("click", () => {
         this.layout = b.dataset.layout;
@@ -593,7 +593,9 @@ class XMeyePanel extends HTMLElement {
 
   async refreshEvents() {
     try {
-      const res = await this.hass.connection.sendMessagePromise({ type: "xmeye/events", hours: 24, limit: 150 });
+      const res = await this.hass.connection.sendMessagePromise({
+        type: "xmeye/events", hours: 24, limit: 150, ...(this.kind === "all" ? {} : { kind: this.kind }),
+      });
       this.events = res.events;
     } catch (err) {
       return;
