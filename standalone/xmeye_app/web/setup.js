@@ -68,17 +68,15 @@ function showTunnel() {
 }
 
 function showCameras(channels) {
-  const names = status.settings.names;
+  const hidden = new Set(status.hidden);
   $("#cams").hidden = !channels.length;
   $("#cams tbody").innerHTML = channels
     .map(({ channel, title }) => {
-      const custom = names[channel];
       const esc = (t) => t.replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
-      return `<tr data-channel="${channel}" data-title="${esc(title)}">
+      return `<tr data-channel="${channel}">
         <td class="num">${channel}</td>
-        <td><input type="text" value="${custom ? esc(custom) : ""}" placeholder="${esc(title)}"
-          aria-label="Name of camera ${channel}"></td>
-        <td class="show"><input type="checkbox" ${custom === "" ? "" : "checked"}
+        <td>${esc(title)}</td>
+        <td class="show"><input type="checkbox" ${hidden.has(String(channel)) ? "" : "checked"}
           aria-label="Show camera ${channel}"></td></tr>`;
     })
     .join("");
@@ -128,15 +126,12 @@ $("#nvr").onsubmit = async (ev) => {
 
 $("#cams").onsubmit = async (ev) => {
   ev.preventDefault();
-  const names = {};
+  const hidden = [];
   for (const row of document.querySelectorAll("#cams tbody tr")) {
-    const name = row.querySelector("input[type=text]").value.trim();
-    const show = row.querySelector("input[type=checkbox]").checked;
-    if (!show) names[row.dataset.channel] = "";
-    else if (name && name !== row.dataset.title) names[row.dataset.channel] = name;
+    if (!row.querySelector("input[type=checkbox]").checked) hidden.push(row.dataset.channel);
   }
   try {
-    await call({ type: "app/save", names, transcode_h265: $("#cams").transcode_h265.checked });
+    await call({ type: "app/save", hidden, transcode_h265: $("#cams").transcode_h265.checked });
     say("#cams-msg", "Saved.", "ok");
     await refresh();
   } catch (err) {

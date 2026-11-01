@@ -86,8 +86,11 @@ The panel works on phones too. The event list moves below the player.
 3. Enter the NVR's host, the DVRIP port (34567), the RTSP port (554), user and password.
    The password is stored only in the config entry.
 
-**Options:** camera names (the NVR's channel titles by default; an empty name hides the
-channel), and whether H.265 recordings are transcoded to H.264 for playback.
+**Options:** which cameras to show, and whether H.265 recordings are transcoded to H.264 for
+playback. Camera names always come from the NVR: rename a camera in the panel's settings
+(*Cameras* tab) and Home Assistant, the panel and HomeKit follow. The integration checks the NVR
+every 2 minutes and reloads by itself when a camera is added, removed or renamed. (Before 0.7 the
+options held a name per camera; channels whose name was empty stay hidden until you tick them.)
 
 ## Standalone app (without Home Assistant)
 

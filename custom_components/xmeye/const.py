@@ -10,8 +10,12 @@ DEFAULT_RTSP_PORT = 554
 
 CONF_TRANSCODE_H265 = "transcode_h265"
 DEFAULT_TRANSCODE_H265 = True
-# {"<1-based channel>": name}; "" hides the channel
+# 1-based channels not shown; names always come from the NVR
+CONF_HIDDEN = "hidden"
+# before 0.7: {"<1-based channel>": name}, where "" hid the channel
 CONF_NAMES = "names"
+# how often to look for cameras added, removed or renamed on the NVR
+CHANNEL_CHECK = timedelta(minutes=2)
 
 # HLS playback sessions
 HLS_SEGMENT_SECONDS = 4

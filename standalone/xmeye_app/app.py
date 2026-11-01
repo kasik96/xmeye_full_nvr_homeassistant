@@ -47,6 +47,7 @@ class App:
         self.session: aiohttp.ClientSession | None = None
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
+        self._watch: asyncio.Task | None = None
         self._alarm_store = JsonStore(data_dir / "events.json")
         self._homekit_store = JsonStore(data_dir / "homekit.json")
         self._snapshots: dict[str, tuple[float, bytes]] = {}
@@ -135,9 +136,10 @@ class App:
             rtsp_port=s.rtsp_port,
             username=s.username,
             password=password,
-            channels=visible_channels(all_channels, s.names),
+            channels=visible_channels(all_channels, s.hidden_channels()),
             nvr_channels=all_channels,
             transcode_h265=s.transcode_h265,
+            channels_changed=lambda: background(self.reconnect(), "xmeye reload cameras"),
         )
         streams = {}
         self.streams = {}
@@ -157,6 +159,7 @@ class App:
         data.alarms = AlarmListener(client, self._alarm_store)
         await data.alarms.async_start()
         self.nvr = data
+        self._watch = background(data.watch_channels(), "xmeye channel check")
         self.error = None
         self.status = f"Connected to {data.model} at {s.host}"
         _LOGGER.info(self.status)
@@ -164,6 +167,9 @@ class App:
     async def _disconnect(self) -> None:
         data, self.nvr = self.nvr, None
         self.streams = {}
+        if self._watch:
+            self._watch.cancel()
+            self._watch = None
         if data is None:
             return
         await data.alarms.async_stop()

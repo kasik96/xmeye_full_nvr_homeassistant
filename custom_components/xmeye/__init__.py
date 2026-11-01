@@ -24,7 +24,6 @@ from homeassistant.util import dt as dt_util
 
 from .alarm import AlarmListener
 from .const import (
-    CONF_NAMES,
     CONF_RTSP_PORT,
     CONF_TRANSCODE_H265,
     DEFAULT_RTSP_PORT,
@@ -34,7 +33,7 @@ from .const import (
 from .dvrip import DVRIPAuthError, DVRIPClient, DVRIPError
 from .go2rtc import Go2rtc
 from .homekit import HomeKitManager
-from .nvr import XMeyeData, nvr_channels, serial_of, visible_channels
+from .nvr import XMeyeData, hidden_channels, nvr_channels, serial_of, visible_channels
 from .playback import PlaybackManager
 from .thumbnails import ThumbnailCache
 
@@ -99,7 +98,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: XMeyeConfigEntry) -> boo
         raise ConfigEntryNotReady(str(err)) from err
 
     all_channels = nvr_channels(titles, status)
-    channels = visible_channels(all_channels, entry.options.get(CONF_NAMES, {}))
+    channels = visible_channels(all_channels, hidden_channels(entry.options))
 
     data = entry.runtime_data = XMeyeData(
         entry_id=entry.entry_id,
@@ -114,6 +113,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: XMeyeConfigEntry) -> boo
         nvr_channels=all_channels,
         transcode_h265=entry.options.get(CONF_TRANSCODE_H265, DEFAULT_TRANSCODE_H265),
         now=_now,
+        channels_changed=lambda: hass.config_entries.async_schedule_reload(entry.entry_id),
     )
 
     dr.async_get(hass).async_get_or_create(
@@ -152,6 +152,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: XMeyeConfigEntry) -> boo
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+    entry.async_create_background_task(hass, data.watch_channels(), "xmeye channel check")
     return True
 
 

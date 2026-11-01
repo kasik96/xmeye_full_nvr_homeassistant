@@ -349,9 +349,9 @@ export class NvrSettings {
           const name = card.querySelector("[data-title]").value;
           await this.call("titles_set", { titles: { [i + 1]: name } });
           this._channels = null;
-          return "Saved. The app shows the new name after a reload.";
+          return "Saved. The cameras reload with the new name in a few seconds.";
         },
-        hint: "Shown on the NVR's screen and in the XMeye app. In this panel a name set in the integration's options wins.",
+        hint: "Used everywhere: this panel, Home Assistant, HomeKit, the NVR's screen and the XMeye app.",
       }
     );
 

@@ -439,6 +439,7 @@ class Connection:
                 "model": nvr.model if nvr else None,
                 "autostart": await asyncio.to_thread(autostart.is_enabled),
                 "lan_urls": self.server.lan_urls() if s.lan else [],
+                "hidden": sorted(s.hidden_channels(), key=int),
                 "tunnel": self.server.tunnel.status(),
                 "tunnel_token": self.server.has_tunnel_token,
             }
@@ -456,7 +457,7 @@ class Connection:
     async def _save(self, msg: dict[str, Any]) -> Any:
         app = self.app
         s = app.settings
-        before = (s.host, s.port, s.rtsp_port, s.username, dict(s.names), s.transcode_h265)
+        before = (s.host, s.port, s.rtsp_port, s.username, s.hidden_channels(), s.transcode_h265)
         listen_before = (s.lan, s.http_port)
         nvr = msg.get("nvr")
         if nvr is not None:
@@ -467,8 +468,9 @@ class Connection:
             if nvr.get("password") is not None:
                 await asyncio.to_thread(app.config.set_password, str(nvr["password"]))
                 before = ()  # reconnect with the new password
-        if "names" in msg:
-            s.names = {str(k): str(v) for k, v in msg["names"].items()}
+        if "hidden" in msg:
+            s.hidden = sorted({str(int(ch)) for ch in msg["hidden"]}, key=int)
+            s.names = {}
         if "transcode_h265" in msg:
             s.transcode_h265 = bool(msg["transcode_h265"])
         if msg.get("web_password"):
@@ -504,7 +506,7 @@ class Connection:
                 raise APIError("Use a port between 1024 and 65535.")
             s.http_port = port
         await asyncio.to_thread(app.config.save)
-        if (s.host, s.port, s.rtsp_port, s.username, s.names, s.transcode_h265) != before:
+        if (s.host, s.port, s.rtsp_port, s.username, s.hidden_channels(), s.transcode_h265) != before:
             await app.reconnect()
         restart = (s.lan, s.http_port) != listen_before
         if restart:

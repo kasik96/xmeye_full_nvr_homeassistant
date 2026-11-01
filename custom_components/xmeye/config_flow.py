@@ -17,13 +17,17 @@ from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNA
 from homeassistant.core import callback
 from homeassistant.helpers.selector import (
     BooleanSelector,
+    SelectOptionDict,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
     TextSelector,
     TextSelectorConfig,
     TextSelectorType,
 )
 
 from .const import (
-    CONF_NAMES,
+    CONF_HIDDEN,
     CONF_RTSP_PORT,
     CONF_TRANSCODE_H265,
     DEFAULT_PORT,
@@ -32,6 +36,7 @@ from .const import (
     DOMAIN,
 )
 from .dvrip import DVRIPAuthError, DVRIPClient, DVRIPError
+from .nvr import hidden_channels
 
 PASSWORD = TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD))
 
@@ -113,7 +118,7 @@ class XMeyeConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class XMeyeOptionsFlow(OptionsFlow):
-    """Channel names (empty hides a channel) and H.265 handling."""
+    """Which cameras to show (names come from the NVR) and H.265 handling."""
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -123,30 +128,33 @@ class XMeyeOptionsFlow(OptionsFlow):
             entry.runtime_data.nvr_channels if hasattr(entry, "runtime_data") else {}
         )
         if user_input is not None:
-            names = {
-                str(ch + 1): str(user_input.get(f"channel_{ch + 1}", "")).strip()
-                for ch in nvr_channels
-            }
+            shown = set(user_input.get("cameras", []))
             return self.async_create_entry(
                 data={
                     CONF_TRANSCODE_H265: user_input[CONF_TRANSCODE_H265],
-                    CONF_NAMES: names,
+                    CONF_HIDDEN: sorted(
+                        (str(ch + 1) for ch in nvr_channels if str(ch + 1) not in shown), key=int
+                    ),
                 }
             )
-        names = entry.options.get(CONF_NAMES, {})
-        fields: dict[Any, Any] = {}
-        suggested: dict[str, str] = {}
-        for ch, title in nvr_channels.items():
-            key = f"channel_{ch + 1}"
-            fields[vol.Optional(key)] = str
-            suggested[key] = names.get(str(ch + 1), title)
-        fields[
-            vol.Required(
-                CONF_TRANSCODE_H265,
-                default=entry.options.get(CONF_TRANSCODE_H265, DEFAULT_TRANSCODE_H265),
-            )
-        ] = BooleanSelector()
-        return self.async_show_form(
-            step_id="init",
-            data_schema=self.add_suggested_values_to_schema(vol.Schema(fields), suggested),
+        hidden = hidden_channels(entry.options)
+        cameras = [
+            SelectOptionDict(value=str(ch + 1), label=f"{ch + 1}. {title}")
+            for ch, title in nvr_channels.items()
+        ]
+        schema = vol.Schema(
+            {
+                vol.Optional(
+                    "cameras", default=[c["value"] for c in cameras if c["value"] not in hidden]
+                ): SelectSelector(
+                    SelectSelectorConfig(
+                        options=cameras, multiple=True, mode=SelectSelectorMode.LIST
+                    )
+                ),
+                vol.Required(
+                    CONF_TRANSCODE_H265,
+                    default=entry.options.get(CONF_TRANSCODE_H265, DEFAULT_TRANSCODE_H265),
+                ): BooleanSelector(),
+            }
         )
+        return self.async_show_form(step_id="init", data_schema=schema)

@@ -6,19 +6,29 @@ No Home Assistant imports: the standalone app uses this module too.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
-from .const import CACHE_PAST, CACHE_TODAY, EVENT_MERGE_GAP, FILE_TAIL, MOTION_FILE_MAX
-from .dvrip import DVRIPClient, Recording
+from .const import (
+    CACHE_PAST,
+    CACHE_TODAY,
+    CHANNEL_CHECK,
+    EVENT_MERGE_GAP,
+    FILE_TAIL,
+    MOTION_FILE_MAX,
+)
+from .dvrip import DVRIPClient, DVRIPError, Recording
 
 if TYPE_CHECKING:
     from .alarm import AlarmListener
     from .go2rtc import Go2rtc
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -51,6 +61,8 @@ class XMeyeData:
     alarms: AlarmListener = None  # type: ignore[assignment]
     # local wall time (naive), like the NVR's file times
     now: Callable[[], datetime] = datetime.now
+    # called when cameras were added, removed or renamed on the NVR (reload)
+    channels_changed: Callable[[], None] | None = None
     _cache: dict[tuple[int, date], tuple[float, list[Recording]]] = field(
         default_factory=dict
     )
@@ -59,6 +71,27 @@ class XMeyeData:
     def invalidate(self) -> None:
         """Forget the cached file lists (after changing recording on the NVR)."""
         self._cache.clear()
+
+    async def check_channels(self) -> bool:
+        """Reload when the NVR's cameras or their names changed."""
+        titles = await self.client.channel_titles()
+        status = await self.client.channel_status()
+        found = nvr_channels(titles, status)
+        if found == self.nvr_channels:
+            return False
+        _LOGGER.info("Cameras on the NVR changed: %s", found)
+        self.nvr_channels = found
+        if self.channels_changed:
+            self.channels_changed()
+        return True
+
+    async def watch_channels(self) -> None:
+        while True:
+            await asyncio.sleep(CHANNEL_CHECK.total_seconds())
+            try:
+                await self.check_channels()
+            except (DVRIPError, OSError) as err:
+                _LOGGER.debug("Channel check failed: %s", err)
 
     def rtsp_url(self, channel: int, sub: bool) -> str:
         user = quote(self.username, safe="")
@@ -169,13 +202,17 @@ def nvr_channels(titles: list[str], status: list[dict]) -> dict[int, str]:
     return out
 
 
-def visible_channels(nvr: dict[int, str], names: dict[str, str]) -> dict[int, str]:
-    """Names from the options override the NVR's titles; an empty name hides a channel."""
-    return {
-        index: names.get(str(index + 1), title).strip()
-        for index, title in nvr.items()
-        if names.get(str(index + 1), title).strip()
-    }
+def hidden_channels(options: Mapping[str, Any]) -> set[str]:
+    """1-based channels to leave out. Settings from before 0.7 had a name per
+    channel instead, where an empty one hid the channel."""
+    if "hidden" in options:
+        return {str(ch) for ch in options["hidden"]}
+    names = options.get("names") or {}
+    return {ch for ch, name in names.items() if not str(name).strip()}
+
+
+def visible_channels(nvr: dict[int, str], hidden: set[str]) -> dict[int, str]:
+    return {index: title for index, title in nvr.items() if str(index + 1) not in hidden}
 
 
 def serial_of(info: dict, fallback: str) -> str:

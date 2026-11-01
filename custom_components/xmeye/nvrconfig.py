@@ -142,7 +142,10 @@ async def config_set(svc: Services, msg: dict[str, Any]) -> Any:
         raise APIError(str(err)) from err
     if msg["name"].startswith(("Record.", "Detect.")):
         data.invalidate()
-    return hide_secrets(await _get(data.client, msg["name"]))
+    result = hide_secrets(await _get(data.client, msg["name"]))
+    if msg["name"].startswith("NetWork.RemoteDevice"):
+        await data.check_channels()
+    return result
 
 
 @command(
@@ -187,7 +190,8 @@ async def network_set(svc: Services, msg: dict[str, Any]) -> Any:
 @command("titles_set", {vol.Required("entry_id"): str, vol.Required("titles"): {vol.Coerce(int): str}}, admin=True)
 async def titles_set(svc: Services, msg: dict[str, Any]) -> Any:
     """Channel names on the NVR (1-based channel → name)."""
-    client = _nvr(svc, msg["entry_id"]).client
+    data = _nvr(svc, msg["entry_id"])
+    client = data.client
     titles = await client.channel_titles()
     for channel, name in msg["titles"].items():
         if not 1 <= channel <= len(titles):
@@ -203,6 +207,7 @@ async def titles_set(svc: Services, msg: dict[str, Any]) -> Any:
             f"The NVR kept the old name of channel {channels}. It renames a camera "
             "only while the camera is online."
         )
+    await data.check_channels()
     return stored
 
 

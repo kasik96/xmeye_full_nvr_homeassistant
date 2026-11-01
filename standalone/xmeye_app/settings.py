@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from xmeye_core.nvr import hidden_channels
+
 from . import APP_NAME
 from .store import write_private
 
@@ -37,7 +39,9 @@ class Settings:
     port: int = 34567
     rtsp_port: int = 554
     username: str = "admin"
-    # {"<1-based channel>": name}; "" hides the channel
+    # 1-based channels not shown (None: not saved since 0.7, see `names`)
+    hidden: list[str] | None = None
+    # before 0.7: {"<1-based channel>": name}, where "" hid the channel
     names: dict[str, str] = field(default_factory=dict)
     transcode_h265: bool = True
     # reachable from other devices on the network (needs web_password)
@@ -51,6 +55,11 @@ class Settings:
     @property
     def configured(self) -> bool:
         return bool(self.host)
+
+    def hidden_channels(self) -> set[str]:
+        return hidden_channels(
+            {"hidden": self.hidden} if self.hidden is not None else {"names": self.names}
+        )
 
     def public(self) -> dict[str, Any]:
         """For the settings page: no secrets."""
