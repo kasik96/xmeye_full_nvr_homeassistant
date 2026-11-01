@@ -8,15 +8,19 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import faulthandler
 import json
 import logging
 import logging.handlers
 import os
+import platform
 import signal
 import ssl
 import subprocess
 import sys
+import tempfile
 import threading
+import traceback
 import urllib.request
 import webbrowser
 
@@ -55,6 +59,31 @@ def _ca_certificates() -> None:
     os.environ["SSL_CERT_FILE"] = certifi.where()
 
 
+def _report_crash(err: BaseException) -> None:
+    """A windowed app has no console: log the error, keep it in a file and,
+    on Windows, show it in a message box."""
+    text = "".join(traceback.format_exception(err))
+    _LOGGER.error("The app stopped:\n%s", text)
+    path = None
+    for folder in (paths.data_dir, lambda: tempfile.gettempdir()):
+        try:
+            path = os.path.join(folder(), "xmeye-crash.txt")
+            with open(path, "w", encoding="utf-8") as file:
+                file.write(f"{APP_NAME} {__version__} on {platform.platform()} ({platform.machine()})\n\n{text}")
+            break
+        except OSError:
+            path = None
+    if sys.stderr is not None:
+        print(text, file=sys.stderr)
+    if sys.platform == "win32":
+        import ctypes  # noqa: PLC0415
+
+        message = f"{APP_NAME} could not start:\n\n{err!r}"
+        if path:
+            message += f"\n\nDetails are in {path}"
+        ctypes.windll.user32.MessageBoxW(None, message, APP_NAME, 0x10)
+
+
 def _hide_console_windows() -> None:
     """A windowed app on Windows would open a console window for every ffmpeg
     and go2rtc it starts; the shared modules call asyncio's function."""
@@ -83,6 +112,7 @@ class Runner:
         self.stopped: asyncio.Event | None = None
         self.port = 0
         self.ready = threading.Event()
+        self.error: BaseException | None = None
 
     def url(self) -> str:
         return f"http://localhost:{self.port}/"
@@ -90,6 +120,14 @@ class Runner:
     def open_ui(self) -> None:
         if self.port:
             webbrowser.open(self.url())
+
+    def run_thread(self) -> None:
+        try:
+            asyncio.run(self.main())
+        except BaseException as err:  # noqa: BLE001
+            self.error = err
+        finally:
+            self.ready.set()
 
     def quit(self) -> None:
         if self.loop and self.stopped:
@@ -110,9 +148,7 @@ class Runner:
         try:
             await server.start()
         except OSError as err:
-            _LOGGER.error("Cannot listen on port %d: %s", app.settings.http_port, err)
-            self.ready.set()
-            return
+            raise OSError(f"Cannot listen on port {app.settings.http_port}: {err}") from err
         self.port = server.port
         await app.start()
         _LOGGER.info("%s %s at %s", APP_NAME, __version__, self.url())
@@ -127,12 +163,30 @@ class Runner:
 
 
 def main() -> None:
+    try:
+        _main()
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except BaseException as err:  # noqa: BLE001
+        _report_crash(err)
+        sys.exit(1)
+
+
+def _main() -> None:
     parser = argparse.ArgumentParser(prog="xmeye", description=APP_NAME)
     parser.add_argument("--background", action="store_true", help="do not open the browser")
     parser.add_argument("--no-tray", action="store_true", help="no tray icon (Ctrl+C quits)")
     parser.add_argument("--debug", action="store_true", help="debug logging")
     args = parser.parse_args()
     _setup_logging(args.debug)
+    # a crash inside a native library (the tray icon, the event loop) leaves no
+    # Python traceback; this writes the stacks of all threads to a file instead
+    fault_file = open(paths.data_dir() / "xmeye-fault.txt", "w", encoding="utf-8")  # noqa: SIM115
+    faulthandler.enable(fault_file, all_threads=True)
+    _LOGGER.info(
+        "%s %s starting on %s (%s), Python %s",
+        APP_NAME, __version__, platform.platform(), platform.machine(), platform.python_version(),
+    )  # fmt: skip
     _ca_certificates()
     frontend = core.load()
     if sys.platform == "win32":
@@ -155,9 +209,11 @@ def main() -> None:
             pass
         return
 
-    thread = threading.Thread(target=lambda: asyncio.run(runner.main()), name="xmeye")
+    thread = threading.Thread(target=runner.run_thread, name="xmeye")
     thread.start()
     runner.ready.wait()
+    if runner.error:
+        raise runner.error
     from . import tray  # noqa: PLC0415
 
     if not thread.is_alive():
@@ -169,6 +225,8 @@ def main() -> None:
         except KeyboardInterrupt:
             runner.quit()
     thread.join()
+    if runner.error:
+        raise runner.error
 
 
 if __name__ == "__main__":

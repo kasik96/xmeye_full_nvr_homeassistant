@@ -60,6 +60,26 @@ jobs:
           ! grep -q "Could not download" "$log"
           kill $! || true
 
+      - name: Start like a double click (Windows)
+        if: runner.os == 'Windows'
+        env:
+          XMEYE_NO_KEYRING: "1"
+        shell: pwsh
+        run: |
+          $env:XMEYE_DATA_DIR = "$env:RUNNER_TEMP\xmeye-gui"
+          $exe = (Get-ChildItem standalone/dist/*.exe).FullName
+          $proc = Start-Process -FilePath $exe -PassThru
+          Start-Sleep -Seconds 25
+          $alive = -not $proc.HasExited
+          try { $ping = (Invoke-WebRequest -UseBasicParsing http://127.0.0.1:18765/api/ping).Content } catch { $ping = "no answer" }
+          Write-Output "alive=$alive exit=$($proc.ExitCode) ping=$ping"
+          foreach ($f in "xmeye.log", "xmeye-crash.txt", "xmeye-fault.txt") {
+            $p = Join-Path $env:XMEYE_DATA_DIR $f
+            if (Test-Path $p) { Write-Output "== $f"; Get-Content $p }
+          }
+          Get-Process | Where-Object { $_.Path -like "*XMeye*" } | Stop-Process -Force -ErrorAction SilentlyContinue
+          if (-not $alive) { exit 1 }
+
       - uses: actions/upload-artifact@v4
         with:
           name: app-${{ matrix.os }}
