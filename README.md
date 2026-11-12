@@ -17,7 +17,8 @@ One integration for a Xiongmai / XMeye NVR:
 * **NVR settings** in the panel: recording mode per camera (always / motion only / off),
   motion detection and sensitivity, disk usage and how many days the disk holds.
 * **Recordings stay on the NVR.** Nothing is recorded into Home Assistant. A sidebar
-  panel shows them on a timeline with motion events and thumbnails and plays them on demand.
+  panel shows them on a timeline with motion events and thumbnails, plays them on demand
+  and downloads them as MP4.
 
 ![Live grid with the newest motion events](docs/screenshots/grid.jpg)
 
@@ -51,6 +52,9 @@ columns (scrolling). Click a tile or an event to open that camera.
 * **Events** tab (motion, with thumbnails) and **Recordings** tab (everything, per hour).
   A day picker covers every day the NVR has footage for. The **Live** button returns to the
   live view.
+* **Download** an event, a recording block or the recording that is playing as an MP4
+  (the download button on each list item and in the player bar). The video is copied as the
+  NVR recorded it, so H.265 cameras give H.265 files (VLC, QuickTime and Windows play them).
 * Camera chips, previous / next camera, mute and fullscreen.
 
 **Settings** (admins): the NVR's own configuration, so the XMeye and VMS apps are not needed:

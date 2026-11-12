@@ -1,4 +1,5 @@
-"""On-demand playback: NVR file → ffmpeg → HLS (fMP4) served from a temp dir.
+"""On-demand playback: NVR file → ffmpeg → HLS (fMP4) served from a temp dir,
+and downloads: NVR files → ffmpeg → one MP4 streamed to the browser.
 
 Nothing is kept: a session's segments live in a temporary directory that is
 deleted when nobody has fetched from it for a while.
@@ -12,12 +13,18 @@ import logging
 import secrets
 import shutil
 import tempfile
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 
 from aiohttp import web
 
 from .const import (
+    EXPORT_LINK_TTL,
     HLS_SEGMENT_SECONDS,
+    MAX_EXPORTS,
     MAX_SESSIONS,
     PLAYLIST_WAIT,
     SESSION_IDLE,
@@ -50,6 +57,8 @@ SAMPLE_RATE = 8000
 FAST_SPEED = 4
 FPS_WINDOW = 6  # s of time stamps before trusting the measured frame rate
 GAP_SECONDS = 10
+EPOCH = datetime(2000, 1, 1)  # of stamp_seconds
+EXPORT_CHUNK = 1 << 16
 
 
 class _AudioInput:
@@ -118,19 +127,27 @@ class PlaybackSession:
         ffmpeg: str,
         transcode_h265: bool,
         speed: int = 1,
+        parts: list[Recording] | None = None,
+        until: datetime | None = None,
     ) -> None:
         self.speed = speed
         # ≥ FAST_SPEED: key frames only, no audio, time line compressed by `speed`
         self._fast = speed >= FAST_SPEED
         self.client = client
         self.rec = rec
+        # files played one after the other; the first may start inside its file
+        self.parts = parts or [rec]
+        # stop at the first key frame from this time on
+        self._until = int((until - EPOCH).total_seconds()) if until else None
         self.token = secrets.token_urlsafe(24)
         self.dir = Path(tempfile.mkdtemp(prefix=TEMP_PREFIX))
         self._ffmpeg = ffmpeg
         self._transcode_h265 = transcode_h265
         self.transcode_h265 = transcode_h265
         self._proc: asyncio.subprocess.Process | None = None
+        self._stdout = asyncio.subprocess.DEVNULL
         self._task: asyncio.Task | None = None
+        self.started = asyncio.Event()  # ffmpeg is running
         self.finished = asyncio.Event()
         self.error: str | None = None
         self.last_access = asyncio.get_running_loop().time()
@@ -155,7 +172,7 @@ class PlaybackSession:
     async def _run(self) -> None:
         audio_in: _AudioInput | None = None
         try:
-            async with self.client.download(self.rec) as chunks:
+            async with contextlib.aclosing(self._chunks()) as chunks:
                 parser = FrameParser()
                 pending = []
                 started = False
@@ -174,7 +191,7 @@ class PlaybackSession:
                             self.rec.file_name, received / 1e6, self._video_frames,
                             self._audio_samples / SAMPLE_RATE, self._padded / SAMPLE_RATE,
                         )
-                    frames = parser.feed(chunk)
+                    frames, done = self._cut(parser.feed(chunk))
                     if not started:
                         for frame in frames:
                             if frame.kind in FRAME_I and not fps:
@@ -186,13 +203,15 @@ class PlaybackSession:
                                 video_frames += 1
                             elif frame.kind == FRAME_AUDIO and audio_codec is None:
                                 audio_codec = frame.codec
-                        if video_frames < PROBE_VIDEO_FRAMES:
+                        if video_frames < PROBE_VIDEO_FRAMES and not done:
                             continue
                         audio_in = await self._start_ffmpeg(
                             fps, video_codec, None if self._fast else AUDIO_FORMATS.get(audio_codec)
                         )
                         frames, pending, started = pending, [], True
                     await self._write(frames, audio_in)
+                    if done:
+                        break
                 if not started and pending:
                     audio_in = await self._start_ffmpeg(
                         fps, video_codec, None if self._fast else AUDIO_FORMATS.get(audio_codec)
@@ -224,6 +243,22 @@ class PlaybackSession:
                     self._proc.kill()
             self.finished.set()
 
+    async def _chunks(self) -> AsyncIterator[bytes]:
+        """The raw bytes of all parts, one download after the other."""
+        for part in self.parts:
+            async with self.client.download(part) as chunks:
+                async for chunk in chunks:
+                    yield chunk
+
+    def _cut(self, frames: list) -> tuple[list, bool]:
+        """Frames before the first key frame at or after `until`, and whether it came."""
+        if self._until is None:
+            return frames, False
+        for i, frame in enumerate(frames):
+            if frame.kind in FRAME_I and stamp_seconds(frame.stamp) >= self._until:
+                return frames[:i], True
+        return frames, False
+
     async def _start_ffmpeg(
         self, fps: int, codec: int, audio: str | None
     ) -> _AudioInput | None:
@@ -253,7 +288,20 @@ class PlaybackSession:
                 args += ["-tag:v", "hvc1"]
         if audio:
             args += ["-map", "1:a", "-c:a", "aac", "-b:a", "48k", "-ar", "16000"]
-        args += [
+        args += self._output_args()
+        _LOGGER.debug("Starting %s", " ".join(args))
+        self._proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=self._stdout,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        background(self._log_stderr(self._proc), "xmeye ffmpeg log")
+        self.started.set()
+        return audio_in
+
+    def _output_args(self) -> list[str]:
+        return [
             "-f", "hls", "-hls_time", str(HLS_SEGMENT_SECONDS), "-hls_list_size", "0",
             "-hls_playlist_type", "event", "-hls_segment_type", "fmp4",
             "-hls_flags", "independent_segments+temp_file",
@@ -261,15 +309,6 @@ class PlaybackSession:
             "-hls_segment_filename", str(self.dir / "seg%05d.m4s"),
             str(self.dir / PLAYLIST),
         ]  # fmt: skip
-        _LOGGER.debug("Starting %s", " ".join(args))
-        self._proc = await asyncio.create_subprocess_exec(
-            *args,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        background(self._log_stderr(self._proc), "xmeye ffmpeg log")
-        return audio_in
 
     async def _log_stderr(self, proc: asyncio.subprocess.Process) -> None:
         assert proc.stderr
@@ -368,6 +407,41 @@ class PlaybackSession:
         await asyncio.to_thread(shutil.rmtree, self.dir, True)
 
 
+class ExportSession(PlaybackSession):
+    """A recording as one MP4 on ffmpeg's stdout: video copied as it is (also
+    H.265), audio as AAC. Fragmented, so it can be written while it is made
+    and a cut-off download still plays up to there."""
+
+    def __init__(
+        self, client: DVRIPClient, parts: list[Recording], until: datetime | None, ffmpeg: str
+    ) -> None:
+        super().__init__(client, parts[0], ffmpeg, False, parts=parts, until=until)
+        self._stdout = asyncio.subprocess.PIPE
+
+    def _output_args(self) -> list[str]:
+        return [
+            "-f", "mp4", "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+            "pipe:1",
+        ]  # fmt: skip
+
+    async def output(self) -> AsyncIterator[bytes]:
+        """The MP4 while it is made; ends early if the recording fails."""
+        assert self._proc and self._proc.stdout
+        while chunk := await self._proc.stdout.read(EXPORT_CHUNK):
+            yield chunk
+
+
+@dataclass
+class Export:
+    """A download link handed to the panel and not fetched yet."""
+
+    client: DVRIPClient
+    parts: list[Recording]
+    until: datetime | None
+    file_name: str
+    created: float
+
+
 def _remove_stale_dirs() -> None:
     for path in Path(tempfile.gettempdir()).glob(f"{TEMP_PREFIX}*"):
         shutil.rmtree(path, ignore_errors=True)
@@ -387,6 +461,8 @@ class PlaybackManager:
         self.ffmpeg = ffmpeg
         self.sessions: dict[str, PlaybackSession] = {}
         self._reaper: asyncio.Task | None = None
+        self.exports: dict[str, Export] = {}
+        self.export_slots = asyncio.Semaphore(MAX_EXPORTS)
 
     async def async_setup(self) -> None:
         """Remove temp dirs left by a crash; call close() at shutdown."""
@@ -415,6 +491,30 @@ class PlaybackManager:
             self._reaper = background(self._reap(), "xmeye playback reaper")
         return session
 
+    def add_export(
+        self,
+        client: DVRIPClient,
+        parts: list[Recording],
+        until: datetime | None,
+        file_name: str,
+    ) -> str:
+        """A one-time token for downloading `parts` as an MP4."""
+        now = asyncio.get_running_loop().time()
+        for token, export in list(self.exports.items()):
+            if now - export.created > EXPORT_LINK_TTL:
+                del self.exports[token]
+        token = secrets.token_urlsafe(24)
+        self.exports[token] = Export(client, parts, until, file_name, now)
+        return token
+
+    def take_export(self, token: str) -> Export | None:
+        export = self.exports.pop(token, None)
+        if export is None:
+            return None
+        if asyncio.get_running_loop().time() - export.created > EXPORT_LINK_TTL:
+            return None
+        return export
+
     async def _remove(self, session: PlaybackSession) -> None:
         self.sessions.pop(session.token, None)
         await session.close()
@@ -436,6 +536,65 @@ class PlaybackManager:
     async def close(self) -> None:
         for session in list(self.sessions.values()):
             await self._remove(session)
+
+
+def _disposition(file_name: str) -> str:
+    ascii_name = file_name.encode("ascii", "replace").decode().replace("?", "_").replace('"', "_")
+    return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(file_name)}"
+
+
+async def export_response(
+    manager: PlaybackManager, token: str, request: web.Request
+) -> web.StreamResponse:
+    """Stream a download made with add_export. The one-time token is the
+    authorization, like the HLS sessions'."""
+    export = manager.take_export(token)
+    if export is None:
+        raise web.HTTPNotFound(text="This download link has expired. Start the download again.")
+    async with manager.export_slots:
+        session = ExportSession(export.client, export.parts, export.until, manager.ffmpeg)
+        session.start()
+        try:
+            waiters = [
+                asyncio.ensure_future(session.started.wait()),
+                asyncio.ensure_future(session.finished.wait()),
+            ]
+            try:
+                await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                for waiter in waiters:
+                    waiter.cancel()
+            if not session.started.is_set():
+                _LOGGER.warning(
+                    "Download of %s failed: %s", export.file_name, session.error or "no video"
+                )
+                raise web.HTTPBadGateway(text=f"The NVR sent no video: {session.error or 'no video'}")
+            response = web.StreamResponse(
+                headers={
+                    "Content-Type": "video/mp4",
+                    "Content-Disposition": _disposition(export.file_name),
+                    "Cache-Control": "no-store",
+                }
+            )
+            await response.prepare(request)
+            try:
+                async for chunk in session.output():
+                    await response.write(chunk)
+            except ConnectionResetError:
+                _LOGGER.debug("Download of %s cancelled", export.file_name)
+                return response
+            await session.finished.wait()
+            if session.error:
+                # Leave the response unfinished, so the browser reports the download as failed.
+                _LOGGER.warning("Download of %s broke off: %s", export.file_name, session.error)
+                if request.transport:
+                    request.transport.close()
+                return response
+            await response.write_eof()
+            _LOGGER.debug("Downloaded %s", export.file_name)
+            return response
+        finally:
+            await session.close()
 
 
 async def hls_response(

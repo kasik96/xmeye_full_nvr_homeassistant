@@ -23,6 +23,11 @@ MAX_SESSIONS = 6
 SESSION_IDLE = 120  # s without a request before a session's temp files go
 PLAYLIST_WAIT = 25  # s to wait for the first segments
 
+# Downloads (MP4 made from the NVR's files)
+MAX_EXPORTS = 2  # at a time; more wait
+EXPORT_LINK_TTL = 300  # s a download link stays valid
+EXPORT_MAX_HOURS = 24
+
 # How long file lists are cached
 CACHE_TODAY = 30
 CACHE_PAST = 600

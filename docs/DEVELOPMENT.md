@@ -93,13 +93,22 @@ downloaded and checked against SHA-256 (amd64, arm64, arm).
 | `xmeye/cameras` | cameras with `entry_id`, `channel`, `name`, `entity_id`, `sub_entity_id` |
 | `xmeye/day {entry_id, channel, date?}` | `recordings`, `events` (merged motion), `days` with footage |
 | `xmeye/events {hours, limit}` | recent events of all cameras |
-| `xmeye/play {entry_id, channel, time, speed, hevc}` (`hevc`: the browser decodes H.265, so no transcoding) | HLS `url`, `begin`, `end`, `speed` the server applied (1 or ≥ 4) |
+| `xmeye/play {entry_id, channel, time, speed, hevc}` (`hevc`: the browser decodes H.265, so no transcoding) | HLS `url`, `begin`, `end`, `file_begin`, `speed` the server applied (1 or ≥ 4) |
+| `xmeye/download {entry_id, channel, begin, end}` (at most 24 h) | one-time `url` of an MP4, file `name`, the `begin` / `end` it covers; `null` if nothing was recorded |
 | `xmeye/nvr {entry_id}` (admin) | system, storage, work state, record and motion config, titles |
 | `xmeye/settings_set {entry_id, channel, record?, motion_enabled?, motion_level?}` (admin) | writes to the NVR |
 | `xmeye/homekit`, `xmeye/homekit_set {key, enabled?, reset?}` (admin) | HomeKit status / switch / unpair |
 | `xmeye/probe {entry_id, channel, time, seconds}` (admin) | diagnostics: real frame rate and download speed |
 
 `GET /api/xmeye/thumb/<entry_id>/<channel>/<YYYYmmddHHMMSS>.jpg` (HA auth) returns an event thumbnail.
+
+Downloads (`ExportSession` in `playback.py`): the same pipeline as playback, run over every file in the
+range one after the other, stopped at the first key frame at or after `end` (by the I-frames' NVR time
+stamps). ffmpeg copies the video (H.265 stays H.265, tagged `hvc1`), makes AAC from the audio and writes a
+fragmented MP4 to stdout, which `GET /api/xmeye/download/<token>/<name>` streams as an attachment. The
+token from `xmeye/download` is the authorization (a plain link carries no HA token), works once and
+for 5 minutes. Two downloads run at a time, more wait. If the NVR breaks off, the response is left
+unfinished so the browser reports a failed download.
 
 The panel (`frontend/xmeye-panel.js`) is a plain web component without a build step. Live video uses HA's
 `camera/webrtc/*` WebSocket API, falling back to `camera/stream` HLS. Recordings play through hls.js

@@ -17,7 +17,7 @@ from homeassistant.util import dt as dt_util
 from . import loaded_entries
 from .commands import COMMANDS, APIError, Command, Services, thumbnail
 from .const import DOMAIN
-from .playback import hls_response
+from .playback import export_response, hls_response
 
 
 @callback
@@ -26,6 +26,7 @@ def async_setup(hass: HomeAssistant) -> None:
         websocket_api.async_register_command(hass, _ws_handler(cmd))
     hass.http.register_view(ThumbnailView())
     hass.http.register_view(PlaybackView())
+    hass.http.register_view(DownloadView())
 
 
 def services(hass: HomeAssistant) -> Services:
@@ -92,3 +93,16 @@ class PlaybackView(HomeAssistantView):
     async def get(self, request: web.Request, token: str, name: str) -> web.StreamResponse:
         hass: HomeAssistant = request.app["hass"]
         return await hls_response(hass.data[DOMAIN]["playback"], token, name)
+
+
+class DownloadView(HomeAssistantView):
+    """A one-time token from xmeye/download is the authorization: the browser
+    downloads with a plain link, which carries no HA token."""
+
+    url = "/api/xmeye/download/{token}/{name}"
+    name = "api:xmeye:download"
+    requires_auth = False
+
+    async def get(self, request: web.Request, token: str, name: str) -> web.StreamResponse:
+        hass: HomeAssistant = request.app["hass"]
+        return await export_response(hass.data[DOMAIN]["playback"], token, request)

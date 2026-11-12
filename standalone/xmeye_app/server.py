@@ -30,7 +30,7 @@ import voluptuous as vol
 
 from xmeye_core.commands import COMMANDS, APIError, thumbnail
 from xmeye_core.dvrip import DVRIPAuthError, DVRIPError
-from xmeye_core.playback import hls_response
+from xmeye_core.playback import export_response, hls_response
 from xmeye_core.util import background
 
 from . import APP_NAME, __version__, autostart
@@ -81,6 +81,7 @@ class Server:
         wapp.router.add_get("/api/ping", self._ping)
         wapp.router.add_get("/api/websocket", self._websocket)
         wapp.router.add_get("/api/xmeye/hls/{token}/{name}", self._hls)
+        wapp.router.add_get("/api/xmeye/download/{token}/{name}", self._download)
         wapp.router.add_get("/api/xmeye/thumb/{entry_id}/{channel}/{stamp}", self._thumb)
         wapp.router.add_get("/api/snapshot/{entity_id}", self._snapshot)
         wapp.router.add_get("/api/live/{stream}/{file:.+}", self._live)
@@ -245,6 +246,13 @@ class Server:
             raise web.HTTPNotFound
         info = request.match_info
         return await hls_response(self.app.services.playback, info["token"], info["name"])
+
+    async def _download(self, request: web.Request) -> web.StreamResponse:
+        if not self.app.services:
+            raise web.HTTPNotFound
+        return await export_response(
+            self.app.services.playback, request.match_info["token"], request
+        )
 
     async def _thumb(self, request: web.Request) -> web.StreamResponse:
         if not self.app.services:

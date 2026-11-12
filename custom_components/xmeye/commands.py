@@ -4,15 +4,18 @@ standalone app (its own WebSocket). No Home Assistant imports."""
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from typing import Any
+from urllib.parse import quote
 
 from aiohttp import web
 import voluptuous as vol
 
 from .alarm import KINDS
+from .const import EXPORT_MAX_HOURS
 from .dvrip import FRAME_I, FRAME_P, DVRIPError, FrameParser, stamp_seconds
 from .homekit import HomeKitManager
 from .nvr import XMeyeData, as_dict
@@ -38,6 +41,8 @@ class Services:
     entity_id: Callable[[str], str | None]
     # URL prefix of the HLS sessions
     hls_url: str = "/api/xmeye/hls"
+    # URL prefix of the downloads
+    download_url: str = "/api/xmeye/download"
     now: Callable[[], datetime] = field(default=datetime.now)
     # the NVR's address or our user's password changed: {"host", "port"} / {"password"}
     credentials_changed: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None
@@ -180,8 +185,62 @@ async def play(svc: Services, msg: dict[str, Any]) -> Any:
         "url": f"{svc.hls_url}/{session.token}/{PLAYLIST}",
         "begin": start.strftime(TIME_FORMAT),
         "end": rec.end.strftime(TIME_FORMAT),
+        "file_begin": rec.begin.strftime(TIME_FORMAT),
         "kind": rec.kind,
         "speed": speed,
+    }
+
+
+def _file_name(camera: str, begin: datetime) -> str:
+    """"Front door 2026-10-28 21.59.26.mp4", safe on Windows too."""
+    camera = re.sub(r'[\x00-\x1f<>:"/\\|?*]+', "_", camera).strip(" .") or "Camera"
+    return f"{camera} {begin:%Y-%m-%d %H.%M.%S}.mp4"
+
+
+@command(
+    "download",
+    {
+        vol.Required("entry_id"): str,
+        vol.Required("channel"): int,
+        vol.Required("begin"): str,
+        vol.Required("end"): str,
+    },
+)
+async def download(svc: Services, msg: dict[str, Any]) -> Any:
+    """A link that downloads the camera's footage from begin to end as one MP4."""
+    data = _nvr(svc, msg["entry_id"])
+    channel = _channel(data, msg["channel"])
+    try:
+        begin = datetime.strptime(msg["begin"], TIME_FORMAT)
+        end = datetime.strptime(msg["end"], TIME_FORMAT)
+    except ValueError as err:
+        raise APIError("bad time") from err
+    if end <= begin:
+        raise APIError("the end is before the beginning")
+    if end - begin > timedelta(hours=EXPORT_MAX_HOURS):
+        raise APIError(f"at most {EXPORT_MAX_HOURS} hours at a time")
+    files = {}
+    try:
+        day_ = begin.date() - timedelta(days=1)  # a file may start the day before
+        while day_ <= end.date():
+            for rec in await data.recordings(channel, day_):
+                if rec.begin < end and rec.end > begin:
+                    files[rec.file_name] = rec
+            day_ += timedelta(days=1)
+    except DVRIPError as err:
+        raise APIError(str(err)) from err
+    parts = sorted(files.values(), key=lambda r: r.begin)
+    if not parts:
+        return None
+    parts[0] = replace(parts[0], begin=max(begin, parts[0].begin))
+    until = end if end < parts[-1].end else None
+    name = _file_name(data.channels[channel], parts[0].begin)
+    token = svc.playback.add_export(data.client, parts, until, name)
+    return {
+        "url": f"{svc.download_url}/{token}/{quote(name)}",
+        "name": name,
+        "begin": parts[0].begin.strftime(TIME_FORMAT),
+        "end": min(end, parts[-1].end).strftime(TIME_FORMAT),
     }
 
 

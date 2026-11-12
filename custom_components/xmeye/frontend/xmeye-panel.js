@@ -11,6 +11,7 @@ const GRID_LAYOUTS = [
   ["2", "2", "Two columns"],
 ];
 const MIN_SPAN = 300;
+const EVENT_PAD = 3; // s of footage added before and after an event in downloads
 // event filter: kind, chip label, label in "No … in the last 24 hours", badge
 const KINDS = [
   ["all", "All", "events", ""],
@@ -117,7 +118,14 @@ aside { width:340px; flex:none; border-left:1px solid #1f2125; display:flex; fle
 .item { display:flex; gap:10px; padding:8px; border-radius:10px; cursor:pointer; align-items:center; }
 .item:hover { background:#1a1c20; } .item.on { background:#1d2a44; }
 .item .meta { width:86px; flex:none; font-size:13px; } .item .meta div+div { color:#999; font-size:12px; margin-top:2px; }
-.item .th { flex:1; aspect-ratio:16/9; border-radius:8px; background:#1b1d21; overflow:hidden; }
+.item .th { flex:1; aspect-ratio:16/9; border-radius:8px; background:#1b1d21; overflow:hidden; position:relative; }
+.item .dl { position:absolute; right:6px; bottom:6px; width:30px; height:30px; border-radius:50%;
+  background:#000b; display:grid; place-items:center; opacity:0; transition:opacity .15s; }
+.item:hover .dl, .item .dl:focus-visible { opacity:1; }
+@media (hover: none) { .item .dl { opacity:1; } }
+.item .dl svg { width:18px; height:18px; fill:#fff; }
+.dl.busy { opacity:1; pointer-events:none; animation:pulse 1s infinite alternate; }
+@keyframes pulse { to { opacity:.35; } }
 .item .th img { width:100%; height:100%; object-fit:cover; display:block; }
 .empty { color:#777; font-size:13px; padding:16px; }
 .kinds { overflow-x:auto; scrollbar-width:none; max-width:100%; }
@@ -191,6 +199,7 @@ const ICONS = {
   zoomin: "M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z",
   zoomout: "M19,13H5V11H19V13Z",
   cog: "M12,15.5A3.5,3.5 0 0,1 8.5,12A3.5,3.5 0 0,1 12,8.5A3.5,3.5 0 0,1 15.5,12A3.5,3.5 0 0,1 12,15.5M19.43,12.97C19.47,12.65 19.5,12.33 19.5,12C19.5,11.67 19.47,11.34 19.43,11L21.54,9.37C21.73,9.22 21.78,8.95 21.66,8.73L19.66,5.27C19.54,5.05 19.27,4.96 19.05,5.05L16.56,6.05C16.04,5.66 15.5,5.32 14.87,5.07L14.5,2.42C14.46,2.18 14.25,2 14,2H10C9.75,2 9.54,2.18 9.5,2.42L9.13,5.07C8.5,5.32 7.96,5.66 7.44,6.05L4.95,5.05C4.73,4.96 4.46,5.05 4.34,5.27L2.34,8.73C2.21,8.95 2.27,9.22 2.46,9.37L4.57,11C4.53,11.34 4.5,11.67 4.5,12C4.5,12.33 4.53,12.65 4.57,12.97L2.46,14.63C2.27,14.78 2.21,15.05 2.34,15.27L4.34,18.73C4.46,18.95 4.73,19.03 4.95,18.95L7.44,17.94C7.96,18.34 8.5,18.68 9.13,18.93L9.5,21.58C9.54,21.82 9.75,22 10,22H14C14.25,22 14.46,21.82 14.5,21.58L14.87,18.93C15.5,18.67 16.04,18.34 16.56,17.94L19.05,18.95C19.27,19.03 19.54,18.95 19.66,18.73L21.66,15.27C21.78,15.05 21.73,14.78 21.54,14.63L19.43,12.97Z",
+  download: "M5,20H19V18H5M19,9H15V3H9V9H5L12,16L19,9Z",
   back: "M12,2A10,10 0 1,0 22,12A10,10 0 0,0 12,2M12,20A8,8 0 1,1 20,12A8,8 0 0,1 12,20M12,7A5,5 0 1,0 17,12A5,5 0 0,0 12,7Z",
 };
 const icon = (name) =>
@@ -907,6 +916,7 @@ class XMeyePanel extends HTMLElement {
               <span class="dot"></span>
               <div><div class="ttl">${cam.name}</div><div class="sub">Live</div></div>
               <div class="spacer"></div>
+              <button class="icon dl bardl" title="Download this recording" hidden>${icon("download")}</button>
               <select class="speed" title="Playback speed">${SPEEDS.map((v) => `<option value="${v}" ${v === this.speed ? "selected" : ""}>${v}×</option>`).join("")}</select>
               <button class="icon prev" title="Previous camera">${icon("prev")}</button>
               <button class="icon next" title="Next camera">${icon("next")}</button>
@@ -966,6 +976,9 @@ class XMeyePanel extends HTMLElement {
     $(".zout").addEventListener("click", () => this.zoom(2));
     this.bindTrack($(".track"));
     $(".speed").addEventListener("change", (e) => this.setSpeed(Number(e.target.value)));
+    $(".bardl").addEventListener("click", (e) => {
+      if (this.playing) this.download(this.playing.file_begin || this.playing.begin, this.playing.end, e.currentTarget);
+    });
     app.querySelectorAll("[data-tab]").forEach((b) =>
       b.addEventListener("click", () => {
         this.tab = b.dataset.tab;
@@ -983,6 +996,8 @@ class XMeyePanel extends HTMLElement {
     this.shadowRoot.querySelector(".live")?.classList.toggle("hidden", !!live);
     const badge = this.shadowRoot.querySelector(".badge");
     if (badge) badge.hidden = !!live;
+    const dl = this.shadowRoot.querySelector(".bardl");
+    if (dl) dl.hidden = !!live;
   }
 
   setMessage(text) {
@@ -1062,7 +1077,7 @@ class XMeyePanel extends HTMLElement {
             (ev, i) => `<div class="item" data-i="${i}">
               <div class="meta"><div>${this.fmtTime(ev.begin)}${recordings ? `–${this.fmtTime(ev.end)}` : ""}</div><div>${dur(ev.begin, ev.end)}</div>
               ${label(ev) ? `<span class="kind">${label(ev)}</span>` : ""}</div>
-              <div class="th"><img alt="" data-thumb="${this.thumbUrl(cam.entry_id, cam.channel, ev.begin)}"></div>
+              <div class="th"><img alt="" data-thumb="${this.thumbUrl(cam.entry_id, cam.channel, ev.begin)}"><button class="dl" title="Download${recordings ? "" : " this event"}">${icon("download")}</button></div>
             </div>`
           )
           .join("")
@@ -1070,6 +1085,15 @@ class XMeyePanel extends HTMLElement {
     this.bindKinds(list, () => this.renderEvents());
     list.querySelectorAll(".item").forEach((el) =>
       el.addEventListener("click", () => this.play(items[el.dataset.i].begin))
+    );
+    list.querySelectorAll(".item .dl").forEach((b) =>
+      b.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const ev = items[b.closest(".item").dataset.i];
+        // events: a little before and after, like the NVR's pre-record
+        const [begin, end] = recordings ? [ev.begin, ev.end] : [addSeconds(ev.begin, -EVENT_PAD), addSeconds(ev.end, EVENT_PAD)];
+        this.download(begin, end, b);
+      })
     );
     this.lazyThumbs(list);
   }
@@ -1277,6 +1301,47 @@ class XMeyePanel extends HTMLElement {
     const serverWanted = speed >= SERVER_SPEED ? speed : 1;
     if (serverNow === serverWanted) this.applyRate();
     else this.play(this.currentStamp());
+  }
+
+  /** Footage from begin to end as an MP4 file; the browser downloads it. */
+  async download(begin, end, button) {
+    const cam = this.cameras[this.current];
+    button?.classList.add("busy");
+    let res;
+    try {
+      res = await this.hass.connection.sendMessagePromise({
+        type: "xmeye/download",
+        entry_id: cam.entry_id,
+        channel: cam.channel,
+        begin,
+        end,
+      });
+    } catch (err) {
+      this.flash(`Download failed: ${err.message}`);
+      return;
+    } finally {
+      button?.classList.remove("busy");
+    }
+    if (!res) {
+      this.flash("No recording in this period.");
+      return;
+    }
+    const a = document.createElement("a");
+    a.href = res.url;
+    a.download = res.name;
+    this.shadowRoot.append(a);
+    a.click();
+    a.remove();
+  }
+
+  /** A message over the player for a few seconds. */
+  flash(text) {
+    this.setMessage(text);
+    clearTimeout(this.flashTimer);
+    this.flashTimer = setTimeout(() => {
+      const el = this.shadowRoot.querySelector(".msg");
+      if (el?.textContent === text) this.setMessage("");
+    }, 5000);
   }
 
   playNext() {
