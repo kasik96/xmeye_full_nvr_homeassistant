@@ -55,6 +55,9 @@ columns (scrolling). Click a tile or an event to open that camera.
 * **Download** an event, a recording block or the recording that is playing as an MP4
   (the download button on each list item and in the player bar). The video is copied as the
   NVR recorded it, so H.265 cameras give H.265 files (VLC, QuickTime and Windows play them).
+* **Record a clip** while a recording plays: press the red record button, let it play (or skip
+  ahead), press it again, and that stretch downloads as an MP4. It shows red on the timeline
+  meanwhile. The NVR sends footage at about 1 MB/s, so long clips of busy cameras take a while.
 * Camera chips, previous / next camera, mute and fullscreen.
 
 **Settings** (admins): the NVR's own configuration, so the XMeye and VMS apps are not needed:
