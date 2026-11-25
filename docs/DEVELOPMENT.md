@@ -146,8 +146,8 @@ straight from `custom_components/xmeye` without running its `__init__.py` (`core
 from a copy `build.py` makes. It serves the same `xmeye-panel.js` with a stand-in for HA's `hass`
 object (`web/main.js`, `web/connection.js`): its WebSocket speaks HA's `{id, type}` / `result` / `event`
 messages, runs the shared commands, and relays `camera/webrtc/*` to its own go2rtc's WebSocket API
-(`live.py`: API and RTSP on localhost, WebRTC on `:18556`; the NVR's RTSP URLs are added over the API so
-the password is never written to disk). `/api/snapshot/<entity>` is go2rtc's `frame.jpeg`.
+(`live.py`: API and RTSP on localhost, WebRTC on `:18556`; the NVR's RTSP URLs are passed
+as environment variables, like HomeKit's, so the password is never written to disk). `/api/snapshot/<entity>` is go2rtc's `frame.jpeg`.
 
 Access (`server.py`): only requests to `localhost` from this computer skip the login. With LAN access on,
 everyone else needs the web password (PBKDF2, session cookie). WebSockets and POSTs must come from the

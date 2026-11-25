@@ -26,6 +26,12 @@ def redact(text: str) -> str:
     return SECRETS.sub(lambda m: f"{m[1]}***" if m[1] else f"{m[2]}***{m[3]}", text)
 
 
+def source_variable(name: str) -> str:
+    """The environment variable go2rtc reads a stream's source from: in its config
+    the NVR's password would be on disk."""
+    return "XMEYE_" + re.sub(r"\W", "_", name).upper()
+
+
 def background(coro: Coroutine[Any, Any, Any], name: str) -> asyncio.Task:
     """A task that is kept referenced until it ends."""
     task = asyncio.get_running_loop().create_task(coro, name=name)

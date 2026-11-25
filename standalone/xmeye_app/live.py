@@ -2,8 +2,9 @@
 
 The browser gets WebRTC through the app's own WebSocket, which relays the
 offer, answer and ICE candidates to go2rtc's WebSocket API. go2rtc's API and
-RTSP server listen on localhost only; the NVR's RTSP URLs (with the password)
-are added over the API, so they are never written to disk.
+RTSP server listen on localhost only. The NVR's RTSP URLs carry the password, so
+they are passed in the process's environment and never written to disk (go2rtc
+saves streams that are added over its API).
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -19,7 +21,7 @@ from typing import Any
 import aiohttp
 import yaml
 
-from xmeye_core.util import background, redact
+from xmeye_core.util import background, redact, source_variable
 
 from .store import write_private
 
@@ -29,7 +31,6 @@ API_PORT = 11985
 RTSP_PORT = 18555
 WEBRTC_PORT = 18556
 RESPAWN = 5
-CHECK = 60
 TIMEOUT = aiohttp.ClientTimeout(total=10)
 
 
@@ -40,36 +41,9 @@ class Go2rtc:
         self._url = url
         self._rtsp = rtsp
         self._session = session
-        self._streams: dict[str, str] = {}
 
     def rtsp_url(self, name: str) -> str:
         return self._rtsp + name
-
-    async def add_streams(self, streams: dict[str, str]) -> bool:
-        self._streams.update(streams)
-        return await self.ensure_streams()
-
-    async def ensure_streams(self) -> bool:
-        """(Re-)add streams go2rtc does not have, e.g. after it restarted."""
-        try:
-            async with self._session.get(
-                self._url + "api/streams", timeout=TIMEOUT
-            ) as resp:
-                resp.raise_for_status()
-                existing = await resp.json(content_type=None) or {}
-            for name, src in self._streams.items():
-                if name in existing:
-                    continue
-                async with self._session.put(
-                    self._url + "api/streams",
-                    params={"name": name, "src": src},
-                    timeout=TIMEOUT,
-                ) as resp:
-                    resp.raise_for_status()
-        except (aiohttp.ClientError, TimeoutError, ValueError) as err:
-            _LOGGER.warning("Could not add streams to go2rtc: %s", err)
-            return False
-        return True
 
     async def snapshot(self, name: str, width: int | None = None) -> bytes | None:
         params = {"src": name}
@@ -97,7 +71,7 @@ class LiveServer:
         self._session = session
         self._proc: asyncio.subprocess.Process | None = None
         self._runner: asyncio.Task | None = None
-        self._streams: dict[str, str] = {}
+        self._env: dict[str, str] = {}
         self.client = self._new_client()
 
     def _new_client(self) -> Go2rtc:
@@ -108,7 +82,7 @@ class LiveServer:
     async def start(self, streams: dict[str, str]) -> None:
         """(Re)start go2rtc with these streams (name → source)."""
         await self.stop()
-        self._streams = streams
+        self._env = {source_variable(name): source for name, source in streams.items()}
         self.client = self._new_client()
         config = {
             "app": {"modules": ["api", "ws", "rtsp", "webrtc", "mjpeg", "hls", "ffmpeg"]},
@@ -117,6 +91,7 @@ class LiveServer:
             "webrtc": {"listen": f":{WEBRTC_PORT}"},
             "ffmpeg": {"bin": self._ffmpeg},
             "log": {"level": "info"},
+            "streams": {name: f"${{{source_variable(name)}}}" for name in streams},
         }
         text = "# Managed by XMeye Full NVR\n" + yaml.safe_dump(config, sort_keys=False)
         await asyncio.to_thread(write_private, self._config, text)
@@ -130,30 +105,18 @@ class LiveServer:
                 str(self._config),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
+                env={**os.environ, **self._env},
             )
-            keeper = background(self._keep_streams(), "xmeye live streams")
             assert self._proc.stdout
-            try:
-                async for line in self._proc.stdout:
-                    text = redact(line.decode(errors="replace").rstrip())
-                    if " ERR " in text or " WRN " in text:
-                        _LOGGER.warning("go2rtc: %s", text)
-                    else:
-                        _LOGGER.debug("go2rtc: %s", text)
-                code = await self._proc.wait()
-            finally:
-                keeper.cancel()
+            async for line in self._proc.stdout:
+                text = redact(line.decode(errors="replace").rstrip())
+                if " ERR " in text or " WRN " in text:
+                    _LOGGER.warning("go2rtc: %s", text)
+                else:
+                    _LOGGER.debug("go2rtc: %s", text)
+            code = await self._proc.wait()
             _LOGGER.warning("go2rtc exited (%s), restarting in %d s", code, RESPAWN)
             await asyncio.sleep(RESPAWN)
-
-    async def _keep_streams(self) -> None:
-        """Add the streams once the API is up, and again if go2rtc lost them."""
-        await asyncio.sleep(1)
-        while not await self.client.add_streams(self._streams):
-            await asyncio.sleep(2)
-        while True:
-            await asyncio.sleep(CHECK)
-            await self.client.ensure_streams()
 
     async def stop(self) -> None:
         if self._runner:

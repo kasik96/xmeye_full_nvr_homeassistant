@@ -14,7 +14,6 @@ import asyncio
 import contextlib
 import logging
 import os
-import re
 import secrets
 from pathlib import Path
 from typing import Any
@@ -23,7 +22,7 @@ from aiohttp import ClientSession
 import yaml
 
 from . import go2rtc
-from .util import Store, background, redact
+from .util import Store, background, redact, source_variable
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -38,14 +37,9 @@ RUNTIME_FIELDS = ("source", "sub_source")  # of a camera, not stored
 BAD_PINS = {f"{d}" * 8 for d in range(10)} | {"12345678", "87654321"}
 
 
-def _variable(key: str) -> str:
-    """The environment variable go2rtc reads this camera's source from."""
-    return "XMEYE_" + re.sub(r"\W", "_", key).upper()
-
-
 def _environment(cameras: dict[str, dict[str, Any]]) -> dict[str, str]:
     return {
-        _variable(key): cam["sub_source"]
+        source_variable(key): cam["sub_source"]
         if cam.get("stream") == "sub" and cam.get("sub_source")
         else cam["source"]
         for key, cam in cameras.items()
@@ -62,9 +56,9 @@ def _sources(key: str, cam: dict[str, Any]) -> list[str]:
     option skips transcoding at a lower resolution.
     """
     if cam.get("stream") == "sub" and cam.get("sub_source"):
-        return [f"${{{_variable(key)}}}", f"ffmpeg:{key}#video=h264", f"ffmpeg:{key}#audio=opus"]
+        return [f"${{{source_variable(key)}}}", f"ffmpeg:{key}#video=h264", f"ffmpeg:{key}#audio=opus"]
     return [
-        f"${{{_variable(key)}}}",
+        f"${{{source_variable(key)}}}",
         f"ffmpeg:{key}#video=h264#width=1920#raw=-g 24",
         f"ffmpeg:{key}#audio=opus",
     ]
