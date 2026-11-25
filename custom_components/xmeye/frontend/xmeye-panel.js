@@ -219,6 +219,8 @@ const ICONS = {
 const icon = (name) =>
   `<svg viewBox="0 0 24 24"><path d="${ICONS[name]}"/></svg>`;
 
+/** Text for innerHTML: names and errors come from the NVR, which others can write to. */
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 const pad = (n) => String(n).padStart(2, "0");
 const secOfDay = (s) => {
   const [h, m, x] = s.slice(11, 19).split(":").map(Number);
@@ -678,7 +680,7 @@ class XMeyePanel extends HTMLElement {
             (c, i) => `<div class="tile" data-i="${i}">
               <img class="poster" alt="">
               <video muted autoplay playsinline></video>
-              <div class="name">${c.name}<span class="dot off"></span></div>
+              <div class="name">${esc(c.name)}<span class="dot off"></span></div>
             </div>`
           )
           .join("")}</div></div>
@@ -803,8 +805,8 @@ class XMeyePanel extends HTMLElement {
       .map((ev, i) => {
         const cam = this.cameras[this.camIndex(ev)];
         const badge = this.badge(ev);
-        return `<div class="ev" data-i="${i}"><div class="th"><img alt="" data-thumb="${this.thumbUrl(ev.entry_id, ev.channel, ev.begin)}">${badge ? `<span class="badge">${badge}</span>` : ""}<span class="cam">${cam?.name ?? ""}</span></div>
-          <div class="t">${this.fmtTime(ev.begin)}</div></div>`;
+        return `<div class="ev" data-i="${i}"><div class="th"><img alt="" data-thumb="${esc(this.thumbUrl(ev.entry_id, ev.channel, ev.begin))}">${badge ? `<span class="badge">${esc(badge)}</span>` : ""}<span class="cam">${esc(cam?.name)}</span></div>
+          <div class="t">${esc(this.fmtTime(ev.begin))}</div></div>`;
       })
       .join("");
     strip.querySelectorAll(".ev").forEach((el) =>
@@ -897,7 +899,7 @@ class XMeyePanel extends HTMLElement {
       for (const id of entries) this.nvr[id] = await conn.sendMessagePromise({ type: "xmeye/nvr", entry_id: id });
       this.homekit = await conn.sendMessagePromise({ type: "xmeye/homekit" });
     } catch (err) {
-      app.querySelector(".spane").innerHTML = `<div class="empty err">Could not read the NVR: ${err.message}</div>`;
+      app.querySelector(".spane").innerHTML = `<div class="empty err">Could not read the NVR: ${esc(err.message)}</div>`;
       return;
     }
     this.renderSettings();
@@ -926,10 +928,10 @@ class XMeyePanel extends HTMLElement {
       const rates = (st.work?.ChannelState || []).map((c) => c.Bitrate || 0);
       const kbps = rates.reduce((a, b) => a + b, 0);
       const perDay = (kbps * 1000 / 8 * 86400) / 1e9;
-      html += `<div class="card"><h3>${st.system?.HardWare ?? "NVR"} <span class="small">firmware ${st.system?.SoftWareVersion ?? "?"}</span></h3>
+      html += `<div class="card"><h3>${esc(st.system?.HardWare ?? "NVR")} <span class="small">firmware ${esc(st.system?.SoftWareVersion ?? "?")}</span></h3>
         <div class="stats">
           <div><b>${total.toFixed(0)} GB</b>disk${free < 1 ? ", full (overwriting)" : `, ${free.toFixed(0)} GB free`}</div>
-          <div><b>${days ? days.toFixed(1) : "?"} days</b>of recordings (oldest ${oldest ?? "?"})</div>
+          <div><b>${days ? days.toFixed(1) : "?"} days</b>of recordings (oldest ${esc(oldest ?? "?")})</div>
           <div><b>${(kbps / 1000).toFixed(1)} Mbit/s</b>all cameras · ${perDay.toFixed(0)} GB/day</div>
         </div>
         <div class="bar2"><div style="width:${total ? (100 * (total - free)) / total : 0}%"></div></div>
@@ -943,20 +945,20 @@ class XMeyePanel extends HTMLElement {
             const motion = st.motion?.[i] ?? {};
             const h = hk.cameras.find((x) => x.entry_id === entryId && x.channel === c.channel);
             const opt = (v, label) => `<option value="${v}" ${mode === v ? "selected" : ""}>${label}</option>`;
-            return `<tr class="cam" data-entry="${entryId}" data-ch="${c.channel}">
-              <td class="name">${c.name}</td>
+            return `<tr class="cam" data-entry="${esc(entryId)}" data-ch="${esc(c.channel)}">
+              <td class="name">${esc(c.name)}</td>
               <td data-label="Bitrate"><span>${((rates[i] || 0) / 1000).toFixed(1)} Mbit/s <span class="small">· ${(((rates[i] || 0) * 1000 / 8 * 86400) / 1e9).toFixed(1)} GB/day</span></span></td>
               <td data-label="Recording"><select data-set="record">${mode === "manual" ? opt("manual", "Always (manual)") : ""}${opt("always", "Always")}${opt("motion", "Motion only")}${opt("off", "Off")}</select></td>
               <td data-label="Motion detection"><span class="switch ${motion.Enable ? "on" : ""}" data-set="motion_enabled" role="switch"></span></td>
               <td data-label="Sensitivity"><select data-set="motion_level">${[1, 2, 3, 4, 5, 6].map((l) => `<option ${l === motion.Level ? "selected" : ""}>${l}</option>`).join("")}</select></td>
               <td class="hk" data-label="HomeKit">${h ? `<div class="hkbox">
-                <div class="hkrow"><span class="switch ${h.enabled ? "on" : ""}" data-hk="${h.key}" role="switch"></span>
-                ${h.enabled ? (h.paired ? `<span class="ok small">Paired</span><button class="btn" data-hkreset="${h.key}">Unpair</button>` : `<span class="small">Code <span class="pin">${h.pin}</span></span>`) : ""}</div>
-                ${h.enabled ? `<div class="hkrow"><select class="hkstream" data-hkstream="${h.key}" title="Main: full resolution (H.265 cameras are converted to 1080p H.264). Sub: no conversion, lower resolution.">
+                <div class="hkrow"><span class="switch ${h.enabled ? "on" : ""}" data-hk="${esc(h.key)}" role="switch"></span>
+                ${h.enabled ? (h.paired ? `<span class="ok small">Paired</span><button class="btn" data-hkreset="${esc(h.key)}">Unpair</button>` : `<span class="small">Code <span class="pin">${esc(h.pin)}</span></span>`) : ""}</div>
+                ${h.enabled ? `<div class="hkrow"><select class="hkstream" data-hkstream="${esc(h.key)}" title="Main: full resolution (H.265 cameras are converted to 1080p H.264). Sub: no conversion, lower resolution.">
                     <option value="main" ${h.stream !== "sub" ? "selected" : ""}>Main stream</option>
                     <option value="sub" ${h.stream === "sub" ? "selected" : ""}>Sub stream</option></select>
                   <label class="fast small" title="Keep the stream running so it opens in Apple Home in a second or two. Uses CPU all the time for H.265 cameras (transcoding).">
-                    <input type="checkbox" data-hkpreload="${h.key}" ${h.preload ? "checked" : ""}>Fast start</label></div>` : ""}</div>` : `<span class="muted">—</span>`}</td>
+                    <input type="checkbox" data-hkpreload="${esc(h.key)}" ${h.preload ? "checked" : ""}>Fast start</label></div>` : ""}</div>` : `<span class="muted">—</span>`}</td>
             </tr>`;
           })
           .join("")}
@@ -966,9 +968,9 @@ class XMeyePanel extends HTMLElement {
     }
     html += `<div class="card"><h3>HomeKit</h3><div class="small">
       ${hk.available ? (hk.running ? `<span class="ok">Running</span>` : `<span class="muted">Off</span>`) : `<span class="err">Not available</span>`}
-      ${hk.error ? ` · <span class="err">${hk.error}</span>` : ""}<br>
+      ${hk.error ? ` · <span class="err">${esc(hk.error)}</span>` : ""}<br>
       Turn a camera on, then in the Apple Home app choose <b>Add Accessory → More options</b>, pick the camera and enter its code.
-      Video goes straight from the NVR stream (no transcoding), via a dedicated go2rtc on port ${hk.port}.</div></div>`;
+      Video goes straight from the NVR stream (no transcoding), via a dedicated go2rtc on port ${esc(hk.port)}.</div></div>`;
     root.innerHTML = html;
     const conn = this.hass.connection;
     const reload = async () => {
@@ -1056,7 +1058,7 @@ class XMeyePanel extends HTMLElement {
       <main><div class="single">
         <div class="left">
           <div class="chips">${this.cameras
-            .map((c, i) => `<button class="chip ${i === this.current ? "on" : ""}" data-i="${i}">${c.name}</button>`)
+            .map((c, i) => `<button class="chip ${i === this.current ? "on" : ""}" data-i="${i}">${esc(c.name)}</button>`)
             .join("")}</div>
           <div class="player">
             <div class="stage"><video class="preview" playsinline autoplay muted></video></div>
@@ -1064,7 +1066,7 @@ class XMeyePanel extends HTMLElement {
             <div class="msg"></div>
             <div class="bar">
               <span class="dot"></span>
-              <div><div class="ttl">${cam.name}</div><div class="sub">Live</div></div>
+              <div><div class="ttl">${esc(cam.name)}</div><div class="sub">Live</div></div>
               <div class="spacer"></div>
               <button class="icon rec" title="Record a clip: click to start, click again to stop and download" hidden>${icon("rec")}</button>
               <button class="icon dl bardl" title="Download this recording" hidden>${icon("download")}</button>
@@ -1212,7 +1214,7 @@ class XMeyePanel extends HTMLElement {
     const sel = this.shadowRoot.querySelector(".days");
     if (sel) {
       sel.innerHTML = this.day.days
-        .map((d) => `<option value="${d}" ${d === date ? "selected" : ""}>${dayLabel(d)}</option>`)
+        .map((d) => `<option value="${esc(d)}" ${d === date ? "selected" : ""}>${esc(dayLabel(d))}</option>`)
         .join("");
     }
     this.renderTrack();
@@ -1251,13 +1253,13 @@ class XMeyePanel extends HTMLElement {
       ? items
           .map(
             (ev, i) => `<div class="item" data-i="${i}">
-              <div class="meta"><div>${this.fmtTime(ev.begin)}${recordings ? `–${this.fmtTime(ev.end)}` : ""}</div><div>${dur(ev.begin, ev.end)}</div>
-              ${label(ev) ? `<span class="kind">${label(ev)}</span>` : ""}</div>
-              <div class="th"><img alt="" data-thumb="${this.thumbUrl(cam.entry_id, cam.channel, ev.begin)}"><button class="dl" title="Download${recordings ? "" : " this event"}">${icon("download")}</button></div>
+              <div class="meta"><div>${esc(this.fmtTime(ev.begin))}${recordings ? `–${esc(this.fmtTime(ev.end))}` : ""}</div><div>${dur(ev.begin, ev.end)}</div>
+              ${label(ev) ? `<span class="kind">${esc(label(ev))}</span>` : ""}</div>
+              <div class="th"><img alt="" data-thumb="${esc(this.thumbUrl(cam.entry_id, cam.channel, ev.begin))}"><button class="dl" title="Download${recordings ? "" : " this event"}">${icon("download")}</button></div>
             </div>`
           )
           .join("")
-      : recordings ? `<div class="empty">No recordings on ${dayLabel(this.date)}.</div>` : this.noEvents(`on ${dayLabel(this.date)}`));
+      : recordings ? `<div class="empty">No recordings on ${esc(dayLabel(this.date))}.</div>` : this.noEvents(`on ${esc(dayLabel(this.date))}`));
     this.bindKinds(list, () => this.renderEvents());
     list.querySelectorAll(".item").forEach((el) =>
       el.addEventListener("click", () => this.play(items[el.dataset.i].begin))

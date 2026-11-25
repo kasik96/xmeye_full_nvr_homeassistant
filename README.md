@@ -163,8 +163,8 @@ second go2rtc just for HomeKit. Nothing has to be installed. It uses the go2rtc 
 with Home Assistant OS and the container image. On other installs it downloads the pinned
 go2rtc 1.9.14 release from GitHub once (checked by SHA-256) into `.storage`. It listens on port 51830 (HomeKit) and 51831 (SRTP video). Only the HomeKit
 pairing endpoints are reachable from the network; go2rtc's API and streams are not. It
-reads the main streams from HA's go2rtc RTSP restream, so H.264 video is passed through and
-the NVR still sees one connection per stream. HomeKit only takes H.264. For H.265 cameras
+reads the streams from the NVR with connections of its own; H.264 video is passed through.
+The NVR's password is not written to its config file. HomeKit only takes H.264. For H.265 cameras
 go2rtc converts the video to 1080p H.264 with ffmpeg while someone watches in the Home app
 (about real time for a 2560×1440 camera on an x86 box). Each camera can also use its
 **sub stream**, which is often H.264, so nothing is converted, at a lower resolution.

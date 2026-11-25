@@ -61,7 +61,7 @@ function showTunnel() {
     return;
   }
   const esc = (x) => x.replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
-  const state = `<span class="${t.state === "connected" ? "ok" : t.state === "error" ? "err" : ""}">${TUNNEL_STATES[t.state] ?? t.state}</span>`;
+  const state = `<span class="${t.state === "connected" ? "ok" : t.state === "error" ? "err" : ""}">${TUNNEL_STATES[t.state] ?? esc(t.state)}</span>`;
   const url = t.url ? ` · <a class="url" href="${esc(t.url)}" target="_blank" rel="noopener">${esc(t.url)}</a> <button type="button" id="copy-url">Copy</button>` : "";
   el.innerHTML = `${state}${url}${t.error ? ` <span class="err">${esc(t.error)}</span>` : ""}`;
   el.querySelector("#copy-url")?.addEventListener("click", () => navigator.clipboard?.writeText(t.url));
@@ -73,11 +73,11 @@ function showCameras(channels) {
   $("#cams tbody").innerHTML = channels
     .map(({ channel, title }) => {
       const esc = (t) => t.replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
-      return `<tr data-channel="${channel}">
-        <td class="num">${channel}</td>
+      return `<tr data-channel="${Number(channel)}">
+        <td class="num">${Number(channel)}</td>
         <td>${esc(title)}</td>
         <td class="show"><input type="checkbox" ${hidden.has(String(channel)) ? "" : "checked"}
-          aria-label="Show camera ${channel}"></td></tr>`;
+          aria-label="Show camera ${Number(channel)}"></td></tr>`;
     })
     .join("");
 }

@@ -2,9 +2,10 @@
 
 Home Assistant's own go2rtc runs without the HomeKit module, so the
 integration starts a second go2rtc (the same binary) that only serves HomeKit.
-It reads the cameras from HA's go2rtc RTSP restream, so the NVR still sees one
-connection per stream and nothing is transcoded. Pairings are kept by go2rtc
-in its config file, which this module regenerates without losing them.
+It reads the cameras from the NVR. The sources carry the NVR's password, so they
+are passed in the process's environment and never written to disk. Pairings are
+kept by go2rtc in its config file, which this module regenerates without losing
+them.
 """
 
 from __future__ import annotations
@@ -12,6 +13,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
+import re
 import secrets
 from pathlib import Path
 from typing import Any
@@ -20,7 +23,7 @@ from aiohttp import ClientSession
 import yaml
 
 from . import go2rtc
-from .util import Store, background
+from .util import Store, background, redact
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -31,7 +34,22 @@ RESPAWN = 10
 # HAP endpoints; everything else of go2rtc's API stays closed on the LAN
 HAP_PATHS = ["/pair-setup", "/pair-verify", "/pairings", "/accessories", "/characteristics"]
 # Trivial codes Apple rejects
+RUNTIME_FIELDS = ("source", "sub_source")  # of a camera, not stored
 BAD_PINS = {f"{d}" * 8 for d in range(10)} | {"12345678", "87654321"}
+
+
+def _variable(key: str) -> str:
+    """The environment variable go2rtc reads this camera's source from."""
+    return "XMEYE_" + re.sub(r"\W", "_", key).upper()
+
+
+def _environment(cameras: dict[str, dict[str, Any]]) -> dict[str, str]:
+    return {
+        _variable(key): cam["sub_source"]
+        if cam.get("stream") == "sub" and cam.get("sub_source")
+        else cam["source"]
+        for key, cam in cameras.items()
+    }
 
 
 def _sources(key: str, cam: dict[str, Any]) -> list[str]:
@@ -44,9 +62,9 @@ def _sources(key: str, cam: dict[str, Any]) -> list[str]:
     option skips transcoding at a lower resolution.
     """
     if cam.get("stream") == "sub" and cam.get("sub_source"):
-        return [cam["sub_source"], f"ffmpeg:{key}#video=h264", f"ffmpeg:{key}#audio=opus"]
+        return [f"${{{_variable(key)}}}", f"ffmpeg:{key}#video=h264", f"ffmpeg:{key}#audio=opus"]
     return [
-        cam["source"],
+        f"${{{_variable(key)}}}",
         f"ffmpeg:{key}#video=h264#width=1920#raw=-g 24",
         f"ffmpeg:{key}#audio=opus",
     ]
@@ -99,6 +117,7 @@ class HomeKitManager:
         self._proc: asyncio.subprocess.Process | None = None
         self._runner: asyncio.Task | None = None
         self._binary: str | None = None
+        self._env: dict[str, str] = {}
         self.error: str | None = None
         self._lock = asyncio.Lock()
 
@@ -106,6 +125,10 @@ class HomeKitManager:
         """Load the cameras; call async_stop() at shutdown."""
         stored = await self._store.async_load() or {}
         self.cameras = stored.get("cameras", {})
+        for cam in self.cameras.values():
+            # stored before 0.8.1; set again by register()
+            for name in RUNTIME_FIELDS:
+                cam.pop(name, None)
         self._binary = await asyncio.to_thread(go2rtc.find_binary, self._cache_dir)
 
     async def async_stop(self) -> None:
@@ -124,7 +147,7 @@ class HomeKitManager:
         source: str | None,
         sub_source: str | None = None,
     ) -> None:
-        """Called by each NVR at setup with its cameras' restream URLs."""
+        """Called by each NVR at setup with its cameras' RTSP URLs."""
         key = self.stream_name(serial, channel)
         cam = self.cameras.setdefault(key, {"enabled": False, "pin": _new_pin()})
         cam.setdefault("stream", "main")
@@ -143,9 +166,14 @@ class HomeKitManager:
         running HomeKit sessions and any pairing in progress.
         """
         async with self._lock:
-            await self._store.async_save({"cameras": self.cameras})
-            enabled = {k: c for k, c in self.cameras.items() if c["enabled"] and c.get("source")}
-            if not enabled:
+            stored = {
+                key: {k: v for k, v in cam.items() if k not in RUNTIME_FIELDS}
+                for key, cam in self.cameras.items()
+            }
+            await self._store.async_save({"cameras": stored})
+            enabled = {k: c for k, c in self.cameras.items() if c["enabled"]}
+            env = _environment({k: c for k, c in enabled.items() if c.get("source")})
+            if not env:
                 await self._stop_process()
                 return
             if not self._binary:
@@ -157,9 +185,10 @@ class HomeKitManager:
                     return
             changed = await asyncio.to_thread(self._write_config, enabled)
             running = self._proc is not None and self._proc.returncode is None
-            if running and not changed:
+            if running and not changed and env == self._env:
                 return
             await self._stop_process()
+            self._env = env
             self.error = None
             self._runner = background(self._run(), "xmeye homekit go2rtc")
 
@@ -224,7 +253,11 @@ class HomeKitManager:
             self._config.write_text(_dump(config))
 
     def _write_config(self, enabled: dict[str, dict[str, Any]]) -> bool:
-        """Returns whether the file changed."""
+        """Returns whether the file changed.
+
+        An NVR that is not set up yet has no sources; its cameras' pairings
+        have to stay in the file all the same.
+        """
         old = self._load().get("homekit") or {}
         homekit = {}
         for key, cam in enabled.items():
@@ -234,6 +267,7 @@ class HomeKitManager:
                 if (old.get(key) or {}).get(field):
                     item[field] = old[key][field]
             homekit[key] = item
+        streams = {k: c for k, c in enabled.items() if c.get("source")}
         config = {
             "app": {"modules": ["api", "homekit", "rtsp", "srtp", "ffmpeg", "exec"]},
             "api": {"listen": f":{HOMEKIT_PORT}", "allow_paths": HAP_PATHS},
@@ -247,12 +281,12 @@ class HomeKitManager:
             # HA's own go2rtc has SRTP on the default 8443
             "srtp": {"listen": f":{SRTP_PORT}"},
             "log": {"level": "info"},
-            "streams": {key: _sources(key, cam) for key, cam in enabled.items()},
+            "streams": {key: _sources(key, cam) for key, cam in streams.items()},
             # "Fast start": keep the stream (and an H.265 camera's transcoding) running,
             # so Apple Home only waits for the next key frame instead of starting it all
             "preload": {
                 key: "video=h264&audio=opus"
-                for key, cam in enabled.items()
+                for key, cam in streams.items()
                 if cam.get("preload")
             },
             "homekit": homekit,
@@ -278,10 +312,11 @@ class HomeKitManager:
                 str(self._config),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
+                env={**os.environ, **self._env},
             )
             assert self._proc.stdout
             async for line in self._proc.stdout:
-                text = line.decode(errors="replace").rstrip()
+                text = redact(line.decode(errors="replace").rstrip())
                 if " ERR " in text or " WRN " in text:
                     _LOGGER.warning("go2rtc (HomeKit): %s", text)
                 else:

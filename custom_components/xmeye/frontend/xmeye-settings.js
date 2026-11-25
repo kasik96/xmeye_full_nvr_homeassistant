@@ -317,7 +317,7 @@ export class NvrSettings {
 
   chipsHtml(chs) {
     return `<div class="chips">${chs
-      .map((c) => `<button data-ch="${c.index}" class="${c.index === this.channel ? "on" : ""}">${c.index + 1}. ${esc(c.title || `Channel ${c.index + 1}`)}${c.status === "Connected" ? "" : ` <span class="off">●</span>`}</button>`)
+      .map((c) => `<button data-ch="${esc(c.index)}" class="${c.index === this.channel ? "on" : ""}">${c.index + 1}. ${esc(c.title || `Channel ${c.index + 1}`)}${c.status === "Connected" ? "" : ` <span class="off">●</span>`}</button>`)
       .join("")}</div>`;
   }
 
@@ -671,7 +671,7 @@ export class NvrSettings {
           const ip = hexToIp(value.HostIP);
           const ok = await this.dialog({
             title: "Change the NVR's network settings?",
-            text: `The NVR ${useDhcp ? "gets its address by DHCP" : `moves to <b>${esc(ip)}</b>`}, media port ${value.TCPPort}. The app and Home Assistant reconnect there by themselves.
+            text: `The NVR ${useDhcp ? "gets its address by DHCP" : `moves to <b>${esc(ip)}</b>`}, media port ${esc(value.TCPPort)}. The app and Home Assistant reconnect there by themselves.
               If the address is wrong for your network, the NVR is only reachable from its own screen.`,
             ok: "Apply",
             danger: true,

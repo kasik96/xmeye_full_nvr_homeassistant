@@ -15,6 +15,7 @@ for (const cam of cameras) {
   }
 }
 
+const esc = (v) => String(v).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 await import("/panel/xmeye-panel.js");
 const panel = document.createElement("xmeye-panel");
 const problem = status.error || (status.connected ? "" : status.status);
@@ -24,7 +25,7 @@ panel.panel = {
     logo: "/panel/logo.png",
     app_settings: "/setup",
     empty: problem
-      ? `${problem} <a href="/setup" style="color:#7ab0ff">Settings</a>`
+      ? `${esc(problem)} <a href="/setup" style="color:#7ab0ff">Settings</a>`
       : `No cameras. <a href="/setup" style="color:#7ab0ff">Settings</a>`,
   },
 };

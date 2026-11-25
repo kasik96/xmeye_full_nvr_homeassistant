@@ -44,11 +44,9 @@
 ## Live
 
 RTSP `rtsp://<host>:554/user=<u>&password=<p>&channel=<1-based>&stream=<0 main|1 sub>.sdp?`.
-When HA manages go2rtc (`hass.data["go2rtc"].url == http://localhost:11984/`), the integration adds a
-`xmeye-nvr-<serial>-<ch>[-sub]` stream per source over the go2rtc API and re-adds missing streams every
-minute. The camera's `stream_source` is the restream `rtsp://127.0.0.1:18554/<name>`. The name must not be
-`xmeye_<unique id>`, because HA's go2rtc WebRTC provider uses that name for the camera itself. A collision
-makes a stream that reads from itself.
+That is the camera's `stream_source`; Home Assistant's go2rtc adds it by itself. The integration does not touch
+HA's go2rtc, so WebRTC, HLS, HomeKit and snapshots each open their own RTSP connection. A snapshot is one ffmpeg
+run on the sub stream.
 
 **Fast start.** Measured on the test NVR: the first RTSP session of a stream gets a key frame at once
 (0.1–0.5 s), but every later one, also on a connection of its own, waits for the camera's next key frame
@@ -81,11 +79,12 @@ in the event loop, and once froze Home Assistant for 10 s and more on every pane
 
 A second go2rtc (`shutil.which("go2rtc")`) runs with `.storage/xmeye_homekit_go2rtc.yaml`: modules `api`, `homekit`,
 `rtsp`, `srtp`. `api.listen` is `:51830` with `allow_paths` limited to the HAP endpoints, the RTSP server is off,
-SRTP is on `:51831` (HA's go2rtc has 8443). Streams are `hk_<serial>_<ch>` pointing at HA's restream. go2rtc writes
+SRTP is on `:51831` (HA's go2rtc has 8443). Streams are `hk_<serial>_<ch>` reading the NVR's RTSP. The URLs carry the NVR's password: they are passed as environment variables
+(`${XMEYE_HK_…}` in the config, go2rtc replaces them and hides them in its log) and stored nowhere. go2rtc writes
 the pairings back into that file; the integration keeps them when it rewrites it. Per-camera on/off and PIN live in
 `.storage/xmeye.homekit`. go2rtc's mDNS only answers queries (no announcements).
 
-Each HomeKit stream has `[rtsp restream, ffmpeg:<name>#video=h264#width=1920#raw=-g 24, ffmpeg:<name>#audio=opus]`:
+Each HomeKit stream has `[NVR RTSP, ffmpeg:<name>#video=h264#width=1920#raw=-g 24, ffmpeg:<name>#audio=opus]`:
 go2rtc takes the first source whose codecs HomeKit accepts, so H.264 is passed through and H.265 is transcoded on
 demand (`exec` allowed for `ffmpeg` only, ffmpeg reads the stream back over go2rtc's RTSP server on
 `127.0.0.1:51832`). go2rtc encodes H.264 level 4.1 (max 1920×1080). A 2560×1440 picture at that level only showed

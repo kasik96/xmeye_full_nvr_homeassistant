@@ -27,7 +27,6 @@ from .dvrip import DVRIPClient, DVRIPError, Recording
 
 if TYPE_CHECKING:
     from .alarm import AlarmListener
-    from .go2rtc import Go2rtc
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -58,7 +57,6 @@ class XMeyeData:
     # all configured channels with their NVR titles
     nvr_channels: dict[int, str]
     transcode_h265: bool
-    go2rtc: Go2rtc | None = None
     alarms: AlarmListener = None  # type: ignore[assignment]
     # local wall time (naive), like the NVR's file times
     now: Callable[[], datetime] = datetime.now
@@ -105,7 +103,7 @@ class XMeyeData:
         )
 
     def stream_name(self, channel: int, sub: bool) -> str:
-        # Not "xmeye_<unique id>": HA's go2rtc provider uses that for the camera itself.
+        """The stream's name in the standalone app's go2rtc."""
         return f"xmeye-nvr-{self.serial}-{channel + 1}{'-sub' if sub else ''}"
 
     async def request_keyframe(self, channel: int, sub: bool) -> None:

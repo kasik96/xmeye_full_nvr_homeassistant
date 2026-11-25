@@ -3,20 +3,20 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import timedelta
+import contextlib
 
 from homeassistant.components.camera import Camera, CameraEntityFeature
 from homeassistant.components.ffmpeg import async_get_image
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
-from homeassistant.helpers.event import async_track_time_interval
 
 from . import XMeyeConfigEntry, XMeyeData
 from .const import DOMAIN
+from .dvrip import DVRIPError
 
 SNAPSHOT_MAX_AGE = 10  # s
-GO2RTC_CHECK = 60  # s
+SNAPSHOT_KEYFRAME = 1.5  # s to wait for a snapshot before asking for a key frame
 
 
 async def async_setup_entry(
@@ -30,15 +30,6 @@ async def async_setup_entry(
         for channel, name in data.channels.items()
         for sub in (False, True)
     )
-    if data.go2rtc:
-        go2rtc = data.go2rtc
-
-        async def _check(_now) -> None:
-            await go2rtc.ensure_streams()
-
-        entry.async_on_unload(
-            async_track_time_interval(hass, _check, timedelta(seconds=GO2RTC_CHECK))
-        )
 
 
 def device_info(data: XMeyeData, channel: int) -> DeviceInfo:
@@ -72,13 +63,7 @@ class XMeyeCamera(Camera):
         self._image_time = 0.0
         self._image_lock = asyncio.Lock()
 
-    @property
-    def _stream_name(self) -> str:
-        return self._data.stream_name(self._channel, self._sub)
-
     async def stream_source(self) -> str:
-        if self._data.go2rtc:
-            return self._data.go2rtc.rtsp_url(self._stream_name)
         return self._data.rtsp_url(self._channel, self._sub)
 
     async def async_camera_image(
@@ -88,17 +73,28 @@ class XMeyeCamera(Camera):
             now = asyncio.get_running_loop().time()
             if self._image and now - self._image_time < SNAPSHOT_MAX_AGE:
                 return self._image
-            image = None
-            if self._data.go2rtc:
-                image = await self._data.go2rtc.snapshot(self._stream_name, width)
-            if image is None:
-                image = await async_get_image(
-                    self.hass,
-                    self._data.rtsp_url(self._channel, sub=True),
-                    extra_cmd="-rtsp_transport tcp",
-                    width=width,
-                    height=height,
-                )
+            image = await self._snapshot(width, height)
             if image:
                 self._image, self._image_time = image, now
             return image or self._image
+
+    async def _snapshot(self, width: int | None, height: int | None) -> bytes | None:
+        """One picture of the sub stream, straight from the NVR."""
+        task = self.hass.async_create_task(
+            async_get_image(
+                self.hass,
+                self._data.rtsp_url(self._channel, sub=True),
+                extra_cmd="-rtsp_transport tcp",
+                width=width,
+                height=height,
+            )
+        )
+        try:
+            done, _ = await asyncio.wait({task}, timeout=SNAPSHOT_KEYFRAME)
+            if not done:
+                # somebody watches the stream, so it did not start with a key frame
+                with contextlib.suppress(DVRIPError, OSError):
+                    await self._data.request_keyframe(self._channel, True)
+            return await task
+        finally:
+            task.cancel()

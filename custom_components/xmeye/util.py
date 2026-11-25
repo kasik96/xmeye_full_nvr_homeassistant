@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import io
 import os
+import re
 import tarfile
 import zipfile
 from collections.abc import Coroutine
@@ -15,6 +16,14 @@ from typing import Any, Protocol
 import aiohttp
 
 _TASKS: set[asyncio.Task] = set()
+
+
+# go2rtc logs source URLs; the NVR's RTSP URL carries the password
+SECRETS = re.compile(r"(password=)[^&\s\"]*|(://[^:/@\s]+:)[^@\s]*(@)", re.I)
+
+
+def redact(text: str) -> str:
+    return SECRETS.sub(lambda m: f"{m[1]}***" if m[1] else f"{m[2]}***{m[3]}", text)
 
 
 def background(coro: Coroutine[Any, Any, Any], name: str) -> asyncio.Task:

@@ -31,7 +31,6 @@ from .const import (
     DOMAIN,
 )
 from .dvrip import DVRIPAuthError, DVRIPClient, DVRIPError
-from .go2rtc import Go2rtc
 from .homekit import HomeKitManager
 from .nvr import XMeyeData, hidden_channels, nvr_channels, serial_of, visible_channels
 from .playback import PlaybackManager
@@ -125,25 +124,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: XMeyeConfigEntry) -> boo
         configuration_url=f"http://{data.host}",
     )
 
-    # One NVR connection per stream, shared by WebRTC, HomeKit and snapshots.
-    data.go2rtc = Go2rtc.from_hass(hass)
-    if data.go2rtc:
-        streams = {
-            data.stream_name(ch, sub): data.rtsp_url(ch, sub)
-            for ch in channels
-            for sub in (False, True)
-        }
-        if not await data.go2rtc.add_streams(streams):
-            data.go2rtc = None
-
     homekit: HomeKitManager = hass.data[DOMAIN]["homekit"]
     for ch, name in channels.items():
-        sources = [
-            data.go2rtc.rtsp_url(data.stream_name(ch, sub))
-            if data.go2rtc
-            else data.rtsp_url(ch, sub)
-            for sub in (False, True)
-        ]
+        sources = [data.rtsp_url(ch, sub) for sub in (False, True)]
         await homekit.register(entry.entry_id, data.serial, ch, name, *sources)
     await homekit.apply()
 

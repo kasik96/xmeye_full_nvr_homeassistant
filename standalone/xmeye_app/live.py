@@ -12,7 +12,6 @@ import asyncio
 import contextlib
 import json
 import logging
-import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -20,8 +19,7 @@ from typing import Any
 import aiohttp
 import yaml
 
-from xmeye_core.go2rtc import Go2rtc
-from xmeye_core.util import background
+from xmeye_core.util import background, redact
 
 from .store import write_private
 
@@ -32,12 +30,61 @@ RTSP_PORT = 18555
 WEBRTC_PORT = 18556
 RESPAWN = 5
 CHECK = 60
-# go2rtc logs source URLs; the NVR's RTSP URL carries the password
-SECRETS = re.compile(r"(password=)[^&\s\"]*|(://[^:/@\s]+:)[^@\s]*(@)", re.I)
+TIMEOUT = aiohttp.ClientTimeout(total=10)
 
 
-def redact(text: str) -> str:
-    return SECRETS.sub(lambda m: f"{m[1]}***" if m[1] else f"{m[2]}***{m[3]}", text)
+class Go2rtc:
+    """The API of the go2rtc this app runs."""
+
+    def __init__(self, url: str, session: aiohttp.ClientSession, rtsp: str) -> None:
+        self._url = url
+        self._rtsp = rtsp
+        self._session = session
+        self._streams: dict[str, str] = {}
+
+    def rtsp_url(self, name: str) -> str:
+        return self._rtsp + name
+
+    async def add_streams(self, streams: dict[str, str]) -> bool:
+        self._streams.update(streams)
+        return await self.ensure_streams()
+
+    async def ensure_streams(self) -> bool:
+        """(Re-)add streams go2rtc does not have, e.g. after it restarted."""
+        try:
+            async with self._session.get(
+                self._url + "api/streams", timeout=TIMEOUT
+            ) as resp:
+                resp.raise_for_status()
+                existing = await resp.json(content_type=None) or {}
+            for name, src in self._streams.items():
+                if name in existing:
+                    continue
+                async with self._session.put(
+                    self._url + "api/streams",
+                    params={"name": name, "src": src},
+                    timeout=TIMEOUT,
+                ) as resp:
+                    resp.raise_for_status()
+        except (aiohttp.ClientError, TimeoutError, ValueError) as err:
+            _LOGGER.warning("Could not add streams to go2rtc: %s", err)
+            return False
+        return True
+
+    async def snapshot(self, name: str, width: int | None = None) -> bytes | None:
+        params = {"src": name}
+        if width:
+            params["width"] = str(width)
+        try:
+            async with self._session.get(
+                self._url + "api/frame.jpeg", params=params, timeout=TIMEOUT
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                return await resp.read()
+        except (aiohttp.ClientError, TimeoutError) as err:
+            _LOGGER.debug("go2rtc snapshot of %s failed: %s", name, err)
+            return None
 
 
 class LiveServer:

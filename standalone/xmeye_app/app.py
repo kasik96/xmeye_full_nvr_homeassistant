@@ -150,10 +150,9 @@ class App:
                 uid = f"{data.serial}_{ch + 1}{'_sub' if sub else ''}"
                 self.streams[self.services.entity_id(uid)] = name
         await self.live.start(streams)
-        data.go2rtc = self.live.client
         homekit = self.services.homekit
         for ch, name in data.channels.items():
-            sources = [data.go2rtc.rtsp_url(data.stream_name(ch, sub)) for sub in (False, True)]
+            sources = [self.live.client.rtsp_url(data.stream_name(ch, sub)) for sub in (False, True)]
             await homekit.register(ENTRY_ID, data.serial, ch, name, *sources)
         await homekit.apply()
         data.alarms = AlarmListener(client, self._alarm_store)
@@ -227,13 +226,13 @@ class App:
 
     async def snapshot(self, entity_id: str) -> bytes | None:
         stream = self.streams.get(entity_id)
-        if not stream or not self.nvr or not self.nvr.go2rtc:
+        if not stream or not self.nvr or not self.live:
             return None
         loop = asyncio.get_running_loop()
         cached = self._snapshots.get(stream)
         if cached and loop.time() - cached[0] < SNAPSHOT_MAX_AGE:
             return cached[1]
-        image = await self.nvr.go2rtc.snapshot(stream, 640)
+        image = await self.live.client.snapshot(stream, 640)
         if image:
             self._snapshots[stream] = (loop.time(), image)
         return image or (cached[1] if cached else None)

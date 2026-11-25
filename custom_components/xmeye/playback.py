@@ -129,6 +129,7 @@ class PlaybackSession:
         speed: int = 1,
         parts: list[Recording] | None = None,
         until: datetime | None = None,
+        directory: Path | None = None,
     ) -> None:
         self.speed = speed
         # ≥ FAST_SPEED: key frames only, no audio, time line compressed by `speed`
@@ -140,7 +141,8 @@ class PlaybackSession:
         # stop at the first key frame from this time on
         self._until = int((until - EPOCH).total_seconds()) if until else None
         self.token = secrets.token_urlsafe(24)
-        self.dir = Path(tempfile.mkdtemp(prefix=TEMP_PREFIX))
+        # where the HLS files go, made by the caller (blocking); downloads need none
+        self.dir = directory
         self._ffmpeg = ffmpeg
         self._transcode_h265 = transcode_h265
         self.transcode_h265 = transcode_h265
@@ -301,6 +303,7 @@ class PlaybackSession:
         return audio_in
 
     def _output_args(self) -> list[str]:
+        assert self.dir
         return [
             "-f", "hls", "-hls_time", str(HLS_SEGMENT_SECONDS), "-hls_list_size", "0",
             "-hls_playlist_type", "event", "-hls_segment_type", "fmp4",
@@ -381,6 +384,7 @@ class PlaybackSession:
     async def playlist(self) -> str | None:
         """The playlist once it has a segment, made to start at the beginning."""
         self.touch()
+        assert self.dir
         path = self.dir / PLAYLIST
         loop = asyncio.get_running_loop()
         deadline = loop.time() + PLAYLIST_WAIT
@@ -404,7 +408,8 @@ class PlaybackSession:
             self._task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._task
-        await asyncio.to_thread(shutil.rmtree, self.dir, True)
+        if self.dir:
+            await asyncio.to_thread(shutil.rmtree, self.dir, True)
 
 
 class ExportSession(PlaybackSession):
@@ -463,6 +468,7 @@ class PlaybackManager:
         self._reaper: asyncio.Task | None = None
         self.exports: dict[str, Export] = {}
         self.export_slots = asyncio.Semaphore(MAX_EXPORTS)
+        self._start_lock = asyncio.Lock()
 
     async def async_setup(self) -> None:
         """Remove temp dirs left by a crash; call close() at shutdown."""
@@ -470,6 +476,12 @@ class PlaybackManager:
 
     async def start(
         self, client: DVRIPClient, rec: Recording, transcode_h265: bool, speed: int = 1
+    ) -> PlaybackSession:
+        async with self._start_lock:
+            return await self._start(client, rec, transcode_h265, speed)
+
+    async def _start(
+        self, client: DVRIPClient, rec: Recording, transcode_h265: bool, speed: int
     ) -> PlaybackSession:
         for session in self.sessions.values():
             if (
@@ -484,7 +496,10 @@ class PlaybackManager:
         while len(self.sessions) >= MAX_SESSIONS:
             oldest = min(self.sessions.values(), key=lambda s: s.last_access)
             await self._remove(oldest)
-        session = PlaybackSession(client, rec, self.ffmpeg, transcode_h265, speed)
+        directory = Path(await asyncio.to_thread(tempfile.mkdtemp, prefix=TEMP_PREFIX))
+        session = PlaybackSession(
+            client, rec, self.ffmpeg, transcode_h265, speed, directory=directory
+        )
         self.sessions[session.token] = session
         session.start()
         if self._reaper is None or self._reaper.done():
@@ -620,6 +635,7 @@ async def hls_response(
     if "/" in name or "\\" in name or ".." in name or not name.endswith((".mp4", ".m4s")):
         raise web.HTTPNotFound
     session.touch()
+    assert session.dir
     path = session.dir / name
     if not await asyncio.to_thread(path.is_file):
         raise web.HTTPNotFound
