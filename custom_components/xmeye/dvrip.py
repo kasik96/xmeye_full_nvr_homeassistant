@@ -30,6 +30,8 @@ MSG_CONFIG_GET = 1042
 MSG_CHANNEL_TITLE = 1048
 MSG_PLAYBACK = 1420
 MSG_PLAYBACK_CLAIM = 1424
+MSG_MONITOR = 1410
+MSG_MONITOR_CLAIM = 1413
 MSG_PLAYBACK_DATA = 1422
 MSG_DOWNLOAD_DATA = 1426
 MSG_FILE_QUERY = 1440
@@ -43,6 +45,7 @@ RET_BAD_PASSWORD = (203, 205, 206)
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 FILE_PAGE = 64
 TIMEOUT = 10
+KEYFRAME_WAIT = 4  # s
 SOFIA_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
 # Recording kinds from the "[X]" tag in file names.
@@ -94,11 +97,19 @@ class Recording:
     def from_json(cls, channel: int, item: dict[str, Any]) -> Recording:
         return cls(
             channel=channel,
-            begin=datetime.strptime(item["BeginTime"], TIME_FORMAT),
-            end=datetime.strptime(item["EndTime"], TIME_FORMAT),
+            begin=_time(item["BeginTime"]),
+            end=_time(item["EndTime"]),
             file_name=item["FileName"],
             size_kb=_hex(item.get("FileLength", 0)),
         )
+
+
+def _time(text: str) -> datetime:
+    """A day has thousands of files, and strptime is ~50 times slower."""
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return datetime.strptime(text, TIME_FORMAT)
 
 
 class Connection:
@@ -478,6 +489,51 @@ class DVRIPClient:
                     },
                 },
                 )
+            if data:
+                await data.close()
+            await control.close()
+
+    async def request_keyframe(self, channel: int, sub: bool) -> None:
+        """Make the camera send a key frame, to everyone watching the stream.
+
+        Starting a live session does that (RTSP only does it for the first
+        viewer), so start one and stop it at the first key frame.
+        """
+        params = {
+            "Channel": channel,
+            "CombinMode": "NONE",
+            "StreamType": "Extra1" if sub else "Main",
+            "TransMode": "TCP",
+        }
+
+        def body(action: str) -> dict[str, Any]:
+            return {"Name": "OPMonitor", "OPMonitor": {"Action": action, "Parameter": params}}
+
+        control = await self.open_session()
+        data: Connection | None = None
+        started = False
+        try:
+            data = await Connection.open(self.host, self.port)
+            data.session = control.session
+            reply = await data.request(MSG_MONITOR_CLAIM, body("Claim"))
+            if reply.get("Ret") not in RET_OK:
+                raise DVRIPError(f"live claim failed (Ret {reply.get('Ret')})")
+            started = True
+            reply = await control.request(MSG_MONITOR, body("Start"))
+            if reply.get("Ret") not in RET_OK:
+                raise DVRIPError(f"live start failed (Ret {reply.get('Ret')})")
+            parser = FrameParser()
+            async with asyncio.timeout(KEYFRAME_WAIT):
+                while True:
+                    _, chunk = await data.read()
+                    if any(f.kind in FRAME_I for f in parser.feed(chunk)):
+                        return
+        except TimeoutError as err:
+            raise DVRIPError("no key frame") from err
+        finally:
+            if started:
+                with contextlib.suppress(Exception):
+                    await control.send(MSG_MONITOR, body("Stop"))
             if data:
                 await data.close()
             await control.close()

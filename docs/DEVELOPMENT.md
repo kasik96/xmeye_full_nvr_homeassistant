@@ -50,6 +50,18 @@ minute. The camera's `stream_source` is the restream `rtsp://127.0.0.1:18554/<na
 `xmeye_<unique id>`, because HA's go2rtc WebRTC provider uses that name for the camera itself. A collision
 makes a stream that reads from itself.
 
+**Fast start.** Measured on the test NVR: the first RTSP session of a stream gets a key frame at once
+(0.1–0.5 s), but every later one, also on a connection of its own, waits for the camera's next key frame
+(up to 6 s with a 71-frame GOP). Starting a DVRIP live session (1413 `OPMonitor` `Claim` on a second
+connection, 1410 `Start`) makes the camera send a key frame to all viewers within 0.14–0.4 s. So the panel
+calls `xmeye/keyframe {entry_id, channel, sub}` when WebRTC is connected without a picture;
+`DVRIPClient.request_keyframe` starts such a session and stops it at the first key frame. Some cameras
+(Tapo C310) ignore it and keep their 2 s.
+The panel keeps the grid's sub streams connected (`subStream`) and shows the sub stream in the player until
+the main stream has a picture; away from the local network only what is on screen stays connected. Live
+never waits for `xmeye/day`. Nothing in `alarm.py` may parse the whole event history per request: it runs
+in the event loop, and once froze Home Assistant for 10 s and more on every panel refresh.
+
 ## Playback pipeline (`playback.py`)
 
 1. `DVRIPClient.download()` from the requested second to the end of the file. The video clock is built from the

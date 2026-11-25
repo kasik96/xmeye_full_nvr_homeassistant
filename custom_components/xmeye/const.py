@@ -28,6 +28,9 @@ MAX_EXPORTS = 2  # at a time; more wait
 EXPORT_LINK_TTL = 300  # s a download link stays valid
 EXPORT_MAX_HOURS = 24
 
+# Key frame requests for a live stream at most this often (s)
+KEYFRAME_GAP = 0.15
+
 # How long file lists are cached
 CACHE_TODAY = 30
 CACHE_PAST = 600

@@ -20,6 +20,7 @@ from .const import (
     CHANNEL_CHECK,
     EVENT_MERGE_GAP,
     FILE_TAIL,
+    KEYFRAME_GAP,
     MOTION_FILE_MAX,
 )
 from .dvrip import DVRIPClient, DVRIPError, Recording
@@ -67,6 +68,8 @@ class XMeyeData:
         default_factory=dict
     )
     _locks: dict[tuple[int, date], asyncio.Lock] = field(default_factory=dict)
+    _keyframes: dict[tuple[int, bool], float] = field(default_factory=dict)
+    _keyframe_sem: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(6))
 
     def invalidate(self) -> None:
         """Forget the cached file lists (after changing recording on the NVR)."""
@@ -104,6 +107,15 @@ class XMeyeData:
     def stream_name(self, channel: int, sub: bool) -> str:
         # Not "xmeye_<unique id>": HA's go2rtc provider uses that for the camera itself.
         return f"xmeye-nvr-{self.serial}-{channel + 1}{'-sub' if sub else ''}"
+
+    async def request_keyframe(self, channel: int, sub: bool) -> None:
+        """A key frame now, for a live viewer who has no picture yet."""
+        now = asyncio.get_running_loop().time()
+        if now - self._keyframes.get((channel, sub), -KEYFRAME_GAP) < KEYFRAME_GAP:
+            return  # somebody just asked, that one is on its way
+        self._keyframes[channel, sub] = now
+        async with self._keyframe_sem:
+            await self.client.request_keyframe(channel, sub)
 
     async def recordings(self, channel: int, day: date) -> list[Recording]:
         key = (channel, day)

@@ -83,13 +83,14 @@ class AlarmListener:
 
     def periods(self, channel: int, begin: datetime, end: datetime) -> list[tuple[datetime, datetime, str]]:
         """Motion periods of a channel overlapping [begin, end], running ones up to now."""
-        out = []
-        for ch, kind, b, e in self.events:
-            if ch != channel:
-                continue
-            b, e = datetime.strptime(b, TIME_FORMAT), datetime.strptime(e, TIME_FORMAT)
-            if e >= begin and b <= end:
-                out.append((b, e, kind))
+        # There are tens of thousands of these and this runs in the event loop:
+        # the time stamps compare as text, only the few that match are parsed.
+        first, last = begin.strftime(TIME_FORMAT), end.strftime(TIME_FORMAT)
+        out = [
+            (datetime.fromisoformat(b), datetime.fromisoformat(e), kind)
+            for ch, kind, b, e in self.events
+            if ch == channel and e >= first and b <= last
+        ]
         now = datetime.now()
         for (ch, kind), b in self.active.items():
             if ch == channel and b <= end:
@@ -100,7 +101,7 @@ class AlarmListener:
     def history_start(self) -> datetime | None:
         if not self.events:
             return None
-        return min(datetime.strptime(e[2], TIME_FORMAT) for e in self.events)
+        return datetime.fromisoformat(min(e[2] for e in self.events))
 
     def _data(self) -> dict:
         return {"events": self.events}

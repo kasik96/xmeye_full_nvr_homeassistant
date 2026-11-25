@@ -101,6 +101,20 @@ async def cameras(svc: Services, msg: dict[str, Any]) -> Any:
     return {"cameras": out}
 
 
+@command(
+    "keyframe",
+    {vol.Required("entry_id"): str, vol.Required("channel"): int, vol.Required("sub"): bool},
+)
+async def keyframe(svc: Services, msg: dict[str, Any]) -> Any:
+    """A live viewer has no picture yet: who joins a running stream would wait
+    for the camera's next key frame, up to 7 s."""
+    data = _nvr(svc, msg["entry_id"])
+    try:
+        await data.request_keyframe(_channel(data, msg["channel"]), msg["sub"])
+    except (DVRIPError, OSError) as err:
+        raise APIError(str(err)) from err
+
+
 @command("day", {vol.Required("entry_id"): str, vol.Required("channel"): int, vol.Optional("date"): str})
 async def day(svc: Services, msg: dict[str, Any]) -> Any:
     """Recordings and motion events of one camera on one day."""
@@ -144,6 +158,7 @@ async def events(svc: Services, msg: dict[str, Any]) -> Any:
                     found = await data.events(ch, day_)
                 except DVRIPError:
                     continue
+                await asyncio.sleep(0)  # let live views in between
                 found_all += [
                     {**as_dict(e), "entry_id": entry_id}
                     for e in found

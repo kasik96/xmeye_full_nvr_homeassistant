@@ -90,7 +90,11 @@ h2 { font-size:20px; font-weight:400; margin:14px 16px 8px; flex:none; }
 .player { position:relative; flex:1; min-height:160px; width:100%; background:#000; border-radius:12px; overflow:hidden; }
 .player:fullscreen { border-radius:0; }
 .speed { background:#0008; color:#fff; border:1px solid #fff4; border-radius:14px; padding:4px 8px; font:inherit; font-size:13px; }
-.player video { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; background:#000; }
+.player video { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; }
+/* the sub stream until the main stream shows its first picture; some sub streams
+   are squeezed (704x576), so it gets the main stream's shape */
+.stage { position:absolute; inset:0; display:grid; place-items:center; container-type:size; }
+.player .stage video { position:static; width:min(100cqw, 100cqh * 16 / 9); height:auto; aspect-ratio:16/9; object-fit:fill; }
 .bar { position:absolute; left:0; right:0; bottom:0; display:flex; align-items:center; gap:10px;
   padding:10px 12px; background:linear-gradient(transparent, rgba(0,0,0,.75)); }
 .bar .ttl { font-size:15px; } .bar .sub { font-size:12px; color:#bbb; }
@@ -251,31 +255,81 @@ const dayLabel = (iso) => {
   return d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "numeric" });
 };
 
-/** Live view of a camera entity over HA's WebRTC API. */
+// ICE servers are the same for all cameras; TURN logins can expire.
+const CLIENT_CONFIG_TTL = 300000;
+let clientConfig = null;
+function rtcConfig(hass, entityId) {
+  if (!clientConfig || Date.now() - clientConfig.time > CLIENT_CONFIG_TTL) {
+    const promise = hass.connection.sendMessagePromise({
+      type: "camera/webrtc/get_client_config",
+      entity_id: entityId,
+    });
+    clientConfig = { time: Date.now(), promise };
+    promise.catch(() => (clientConfig = null));
+  }
+  return clientConfig.promise;
+}
+
+/** At home the streams of cameras that are not on screen may stay connected. */
+const LOCAL = /^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|\[f[cd]|.*\.(local|lan|home|internal)$|[^.]+$)/i.test(location.hostname);
+
+const WEBRTC_TIMEOUT = 8000;
+const POSTER_DELAY = 1500;
+// ms after connecting (and between) to ask for a key frame when there is no picture
+const KEYFRAME_WAITS = [40, 1000, 2000];
+const WARM_DELAY = 500;
+
+/** Live view of a camera: HA's camera WebRTC, else HLS. Shown in one <video> at a time. */
 class LiveStream {
-  constructor(hass, entityId, video) {
+  constructor(hass, cam, sub) {
     this.hass = hass;
-    this.entityId = entityId;
-    this.video = video;
+    this.cam = cam;
+    this.sub = sub;
+    this.entityId = sub ? cam.sub_entity_id : cam.entity_id;
+    this.video = null;
     this.closed = false;
-    this.start().catch(() => this.startHls().catch((err) => this.onError?.(err)));
+    this.media = new MediaStream();
+    this.connect();
+  }
+
+  /** Show it in this <video> (null: nowhere, but stay connected). */
+  attach(video) {
+    if (this.video === video) return;
+    if (this.video?.srcObject === this.media) this.video.srcObject = null;
+    this.hls?.destroy();
+    this.hls = null;
+    this.video = video;
+    if (!video) return;
+    if (this.hlsUrl) this.playHls();
+    else if (this.media.getTracks().length) this.show();
+    if (this.connected) this.wantPicture(this.pc);
+  }
+
+  show() {
+    if (!this.video) return;
+    if (this.video.srcObject !== this.media) this.video.srcObject = this.media;
+    this.video.play().catch(() => {});
+  }
+
+  async connect() {
+    try {
+      await this.start();
+    } catch (err) {
+      this.failed();
+    }
   }
 
   async start() {
     const conn = this.hass.connection;
-    const cfg = await conn.sendMessagePromise({
-      type: "camera/webrtc/get_client_config",
-      entity_id: this.entityId,
-    });
+    const cfg = await rtcConfig(this.hass, this.entityId);
     if (this.closed) return;
     const pc = (this.pc = new RTCPeerConnection(cfg.configuration));
     pc.addTransceiver("video", { direction: "recvonly" });
-    pc.addTransceiver("audio", { direction: "recvonly" });
-    const stream = new MediaStream();
+    if (!this.sub) pc.addTransceiver("audio", { direction: "recvonly" });
+    this.media.getTracks().forEach((t) => this.media.removeTrack(t));
     pc.ontrack = (ev) => {
-      stream.addTrack(ev.track);
-      if (this.video.srcObject !== stream) this.video.srcObject = stream;
-      this.video.play().catch(() => {});
+      this.media.addTrack(ev.track);
+      this.show();
     };
     let sessionId = null;
     const pending = [];
@@ -292,48 +346,105 @@ class LiveStream {
       sessionId ? sendCandidate(c) : pending.push(c);
     };
     pc.onconnectionstatechange = () => {
-      if (["failed", "closed"].includes(pc.connectionState) && !this.closed) this.restart();
+      if (this.pc !== pc) return;
+      if (pc.connectionState === "connected") {
+        this.connected = true;
+        clearTimeout(this.timer);
+        this.wantPicture(pc);
+      } else if (pc.connectionState === "failed") {
+        this.connected ? this.restart() : this.failed();
+      }
     };
+    clearTimeout(this.timer);
+    this.timer = setTimeout(() => this.pc === pc && this.failed(), WEBRTC_TIMEOUT);
+    // candidates from go2rtc must not overtake its answer
+    let answered;
+    const answer = new Promise((resolve) => (answered = resolve));
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-    this.unsub = await conn.subscribeMessage(
+    const unsub = await conn.subscribeMessage(
       async (msg) => {
+        if (this.pc !== pc) return;
         if (msg.type === "session") {
           sessionId = msg.session_id;
           pending.splice(0).forEach(sendCandidate);
         } else if (msg.type === "answer") {
-          await pc.setRemoteDescription({ type: "answer", sdp: msg.answer });
+          try {
+            await pc.setRemoteDescription({ type: "answer", sdp: msg.answer });
+          } catch (err) {
+            this.failed();
+            return;
+          }
+          answered();
+          // the browser cannot decode the camera's video
+          const direction = pc.getTransceivers()[0]?.currentDirection;
+          if (this.pc === pc && (direction === "inactive" || direction === "stopped")) this.failed();
         } else if (msg.type === "candidate") {
+          await answer;
           await pc.addIceCandidate(msg.candidate).catch(() => {});
         } else if (msg.type === "error") {
-          this.startHls().catch((err) => this.onError?.(err));
+          this.failed();
         }
       },
-      { type: "camera/webrtc/offer", entity_id: this.entityId, offer: offer.sdp }
+      { type: "camera/webrtc/offer", entity_id: this.entityId, offer: offer.sdp },
+      { resubscribe: false }
     );
+    if (this.pc === pc) this.unsub = unsub;
+    else Promise.resolve(unsub()).catch(() => {});
+  }
+
+  /** Connected without a picture: ask for a key frame instead of waiting for the next one. */
+  async wantPicture(pc) {
+    for (const wait of KEYFRAME_WAITS) {
+      await new Promise((resolve) => setTimeout(resolve, wait));
+      if (this.pc !== pc || !this.video) return;
+      const stats = await pc.getStats();
+      if ([...stats.values()].some((s) => s.type === "inbound-rtp" && s.kind === "video" && s.framesDecoded)) return;
+      if (this.pc !== pc) return;
+      this.hass.connection
+        .sendMessagePromise({ type: "xmeye/keyframe", entry_id: this.cam.entry_id, channel: this.cam.channel, sub: this.sub })
+        .catch(() => {});
+    }
+  }
+
+  /** No WebRTC (network, codec): HLS. */
+  failed() {
+    if (this.closed || this.hlsUrl || this.startingHls) return;
+    this.stop();
+    this.startingHls = true;
+    this.startHls()
+      .catch((err) => this.onError?.(err))
+      .finally(() => (this.startingHls = false));
   }
 
   /** HA's own HLS stream, for cameras without WebRTC. */
   async startHls() {
-    this.stop();
     const res = await this.hass.connection.sendMessagePromise({
       type: "camera/stream",
       entity_id: this.entityId,
     });
     if (this.closed) return;
-    this.hlsMode = true;
-    this.hls = await attachHls(this.video, res.url, { liveSyncDurationCount: 2 });
+    this.hlsUrl = res.url;
+    if (this.video) await this.playHls();
   }
 
+  async playHls() {
+    const video = this.video;
+    video.srcObject = null;
+    const hls = await attachHls(video, this.hlsUrl, { liveSyncDurationCount: 2 });
+    if (this.closed || this.video !== video) hls?.destroy();
+    else this.hls = hls;
+  }
+
+  /** The connection was lost. */
   restart() {
-    if (this.hlsMode) return;
     this.stop();
-    this.closed = false;
     clearTimeout(this.retry);
-    this.retry = setTimeout(() => !this.closed && this.start().catch(() => {}), 3000);
+    this.retry = setTimeout(() => !this.closed && this.connect(), 1000);
   }
 
   stop() {
+    clearTimeout(this.timer);
     const unsub = this.unsub;
     this.unsub = null;
     Promise.resolve()
@@ -341,6 +452,7 @@ class LiveStream {
       .catch(() => {});
     this.pc?.close();
     this.pc = null;
+    this.connected = false;
     this.hls?.destroy();
     this.hls = null;
   }
@@ -349,7 +461,8 @@ class LiveStream {
     this.closed = true;
     clearTimeout(this.retry);
     this.stop();
-    this.video.srcObject = null;
+    if (this.video) this.video.srcObject = null;
+    this.video = null;
   }
 }
 
@@ -430,7 +543,8 @@ class XMeyePanel extends HTMLElement {
       this.layout = localStorage.getItem("xmeye.gridLayout") || "fit";
     } catch (err) { /* private mode */ }
     this.tl = { start: 0, span: DAY };
-    this.live = new Map(); // key -> LiveStream
+    this.live = new Map(); // "main" -> the single camera's LiveStream
+    this.subs = new Map(); // sub stream entity -> LiveStream (grid, preview)
     this.thumbs = new Map(); // url -> objectURL
   }
 
@@ -490,12 +604,31 @@ class XMeyePanel extends HTMLElement {
     else if (!this.playing) this.startMainLive();
   }
 
-  closeLive(except) {
-    for (const [key, s] of this.live) {
-      if (key === except) continue;
+  closeMain() {
+    clearTimeout(this.warmTimer);
+    for (const s of this.live.values()) s.close();
+    this.live.clear();
+  }
+
+  closeSubs(except) {
+    for (const [entity, s] of this.subs) {
+      if (entity === except) continue;
       s.close();
-      this.live.delete(key);
+      this.subs.delete(entity);
     }
+  }
+
+  closeLive() {
+    this.closeMain();
+    this.closeSubs();
+  }
+
+  /** A camera's sub stream, connected once and moved between grid and player. */
+  subStream(cam) {
+    const entity = cam.sub_entity_id || cam.entity_id;
+    if (!entity) return null;
+    if (!this.subs.has(entity)) this.subs.set(entity, new LiveStream(this.hass, cam, !!cam.sub_entity_id));
+    return this.subs.get(entity);
   }
 
   header(extra = "") {
@@ -531,7 +664,7 @@ class XMeyePanel extends HTMLElement {
   showGrid() {
     this.view = "grid";
     this.stopPlayback();
-    this.closeLive();
+    this.closeMain();
     history.replaceState(null, "", location.pathname);
     const app = this.shadowRoot.querySelector(".app");
     app.innerHTML = `${this.header()}
@@ -557,16 +690,16 @@ class XMeyePanel extends HTMLElement {
       const poster = tile.querySelector("img");
       const pic = this.hass.states[cam.sub_entity_id || cam.entity_id]?.attributes.entity_picture;
       poster.onerror = () => poster.remove();
-      if (pic) poster.src = pic;
-      else poster.remove();
+      // a snapshot costs the server more than the live picture: only when that is late
+      const posterTimer = setTimeout(() => poster.isConnected && (pic ? (poster.src = pic) : poster.remove()), POSTER_DELAY);
       tile.addEventListener("click", () => this.openCamera(Number(tile.dataset.i)));
       const video = tile.querySelector("video");
       video.addEventListener("playing", () => {
+        clearTimeout(posterTimer);
         poster.remove();
         tile.querySelector(".dot").classList.remove("off");
       });
-      const entity = cam.sub_entity_id || cam.entity_id;
-      if (entity && !document.hidden) this.live.set(`grid-${entity}`, new LiveStream(this.hass, entity, video));
+      if (!document.hidden) this.subStream(cam)?.attach(video);
     });
     this.renderStrip();
     this.bindKinds(app.querySelector(".camhead"), () => this.refreshEvents());
@@ -906,13 +1039,13 @@ class XMeyePanel extends HTMLElement {
     history.replaceState(null, "", `${location.pathname}?camera=${cam.entry_id}-${cam.channel}`);
     if (changed) {
       this.stopPlayback();
-      this.closeLive();
+      this.closeMain();
       this.renderSingle();
     }
-    const date = at ? at.slice(0, 10) : this.date;
-    await this.loadDay(date);
-    if (at) this.play(at);
-    else if (!this.playing) this.startMainLive();
+    // the NVR's recordings list can take seconds: live does not wait for it
+    if (!at && !this.playing && !this.live.has("main")) this.startMainLive();
+    await this.loadDay(at ? at.slice(0, 10) : this.date);
+    if (at && this.view === "single" && this.current === index) this.play(at);
   }
 
   renderSingle() {
@@ -926,7 +1059,8 @@ class XMeyePanel extends HTMLElement {
             .map((c, i) => `<button class="chip ${i === this.current ? "on" : ""}" data-i="${i}">${c.name}</button>`)
             .join("")}</div>
           <div class="player">
-            <video playsinline autoplay muted></video>
+            <div class="stage"><video class="preview" playsinline autoplay muted></video></div>
+            <video class="main" playsinline autoplay muted></video>
             <div class="msg"></div>
             <div class="bar">
               <span class="dot"></span>
@@ -963,7 +1097,7 @@ class XMeyePanel extends HTMLElement {
       </div></main>`;
     this.bindHeader(app);
     const $ = (s) => app.querySelector(s);
-    this.video = $(".player video");
+    this.video = $("video.main");
     this.video.muted = this.muted;
     app.querySelectorAll(".chip").forEach((b) =>
       b.addEventListener("click", () => this.openCamera(Number(b.dataset.i)))
@@ -1029,14 +1163,35 @@ class XMeyePanel extends HTMLElement {
   startMainLive() {
     const cam = this.cameras[this.current];
     if (!cam?.entity_id || !this.video || document.hidden) return;
-    this.closeLive();
+    this.closeMain();
     this.setStatus("Live", true);
     this.setMessage("Connecting…");
-    const onPlaying = () => this.setMessage("");
-    this.video.addEventListener("playing", onPlaying, { once: true });
-    const live = new LiveStream(this.hass, cam.entity_id, this.video);
+    const video = this.video;
+    const preview = this.shadowRoot.querySelector("video.preview");
+    const sub = cam.sub_entity_id ? this.subStream(cam) : null;
+    // away from home only what is on screen
+    if (!LOCAL) this.closeSubs(cam.sub_entity_id);
+    preview.addEventListener("playing", () => this.setMessage(""), { once: true });
+    sub?.attach(preview);
+    const live = new LiveStream(this.hass, cam, false);
     live.onError = (err) => this.setMessage(`Live view failed: ${err.message}`);
+    live.attach(video);
     this.live.set("main", live);
+    video.addEventListener(
+      "playing",
+      () => {
+        this.setMessage("");
+        if (this.live.get("main") !== live) return;
+        sub?.attach(null);
+        if (LOCAL) {
+          // the other cameras, so that switching to them is instant
+          this.warmTimer = setTimeout(() => this.cameras.forEach((c) => c.sub_entity_id && this.subStream(c)), WARM_DELAY);
+        } else {
+          this.closeSubs();
+        }
+      },
+      { once: true }
+    );
   }
 
   async loadDay(date) {
